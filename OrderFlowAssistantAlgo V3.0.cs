@@ -955,8 +955,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                 
 			                    minVolume = int.Parse(values[0]);
 			                	ratio = double.Parse(values[1]);
-								askDetection = int.Parse(values[2]);
-								bidDetection = int.Parse(values[3]);
+								detectionValue = int.Parse(values[2]);
 							
 								
 //								if (minVolume < 25)
@@ -1055,7 +1054,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				if(State == State.Realtime)
 				{
 					
-					if(isRegressionMode  && buys - sells >= minVolume && buyRatio > ratio  && sells >= (MLOn ? bidDetection : detectionValue))/* || (isTrendMode && sells == 0&& lowSpread) || (isRegressionMode && sells == 0 && lowSpread))*/
+					if(isRegressionMode  && buys - sells >= minVolume && buyRatio > ratio  && sells >= (MLOn ? detectionValue : detectionValue))/* || (isTrendMode && sells == 0&& lowSpread) || (isRegressionMode && sells == 0 && lowSpread))*/
 					{
 					
 						tradeTaken =true;
@@ -1077,7 +1076,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							#endregion;					
 					}
 					
-					else if(isTrendMode  && buys - sells>= minVolume && buyRatio > ratio && sells >= (MLOn ? bidDetection : detectionValue) )
+					else if(isTrendMode  && buys - sells>= minVolume && buyRatio > ratio && sells >= (MLOn ? detectionValue : detectionValue) )
 					{
 						
 						tradeTaken =true;
@@ -1135,7 +1134,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 					
 				if(State == State.Realtime){
 					
-					if( isRegressionMode  && sells - buys >= minVolume  && sellRatio > ratio && buys >= (MLOn ? askDetection : detectionValue) ) /* || (isTrendMode && buys == 0&& lowSpread) || (isRegressionMode && sells == 0 && lowSpread)) */
+					if( isRegressionMode  && sells - buys >= minVolume  && sellRatio > ratio && buys >= (MLOn ? detectionValue : detectionValue) ) /* || (isTrendMode && buys == 0&& lowSpread) || (isRegressionMode && sells == 0 && lowSpread)) */
 					{
 				
 						tradeTaken =true;
@@ -1155,7 +1154,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						
 						#endregion
 					}
-					else if(isTrendMode && sells - buys >=  minVolume && sellRatio > ratio &&  buys >= (MLOn ? askDetection : detectionValue) )
+					else if(isTrendMode && sells - buys >=  minVolume && sellRatio > ratio &&  buys >= (MLOn ? detectionValue : detectionValue) )
 					{
 						
 						tradeTaken =true;

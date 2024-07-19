@@ -41,16 +41,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double WinRate { get; set; }
 		
 		public int WindowId { get; set; }
-		
-		public double Volume { get; set; }
-		public double Delta { get; set; }
-		public double AverageBid { get; set; }
-		public double AverageAsk { get; set; }
-		public double PercentDelta { get; set; }
-		public double TradingMode{ get; set; }
+
 		public double VolumeSpeed { get; set; }
-		public double HighBid { get; set; }
-		public double HighAsk { get; set; }
+		public double BolDif { get; set; }
+		public double MADif { get; set; }
+		public double TOD { get; set; }
+		public double StdDev { get; set; }
+	
 	
 		
 		public int TradeCount { get; set; } = 1;
@@ -59,23 +56,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public bool IsCompleted { get; set; } = false;
 		
 		
-		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string direction, double delta, double averageBid, double averageAsk, double volumeSpeed, double highBid, double highAsk, double volume, double tradingMode)
+		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string direction,double volumeSpeed, double bolDif, double maDif, double tod, double stdDev)
 		{
 		    ImbVol = imbVol;
 		    AdvDetection = advDetection;
 			Ratio = ratio;
 		    EntryPrice = entryPrice;
 		    Direction = direction;
-		    Delta = delta;
-			AverageBid = averageBid;
-			AverageAsk = averageAsk;
 			VolumeSpeed = volumeSpeed;
-			HighBid = highBid;
-			HighAsk = highAsk;
-			Volume = volume;
-			TradingMode = tradingMode;
-		
-		
+			BolDif = bolDif;
+			MADif = maDif;
+			TOD = tod;
+			StdDev = stdDev;
+			
 		}
 		
 		public void UpdateWinRate()
@@ -414,7 +407,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				{
 					if(Time[0] - predValueWrite > TimeSpan.FromSeconds(5)){
 						
-				 		WriteCurrentPredictiveValuesToCsv();
+				 		
 						predValueWrite = Time[0];
 					}
 				}
@@ -535,10 +528,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 				UpdateDeltaValues(Delta);
 		
-//				if(State==State.Realtime)
-//				{
-//				 WriteCurrentPredictiveValuesToCsv();
-//				}
+				if(State==State.Realtime)
+				{
+				 WriteCurrentPredictiveValuesToCsv();
+				}
 				
 				prevDelta = Delta;
 
@@ -546,6 +539,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        activeBar = CurrentBar;
 					
 				tradeTaken =false;
+				
 		        buysAtBar.Clear();
 		        sellsAtBar.Clear();
 		    }
@@ -688,7 +682,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			            tradeRatio = buyVolume > 0 ? (double)sellVolume / buyVolume : sellVolume;
 			        }
 					
-			        if (trainModel ? (Math.Abs(buyVolume - sellVolume) > minVolume && Math.Min(buyVolume, sellVolume) > detectionValue && tradeRatio > ratio) : (Math.Abs(buyVolume - sellVolume) > 0 && Math.Min(buyVolume, sellVolume) > 0 && tradeRatio > 1))
+			        if (trainModel ? (Math.Abs(buyVolume - sellVolume) > minVolume && Math.Min(buyVolume, sellVolume) > detectionValue && tradeRatio > ratio) : (Math.Abs(buyVolume - sellVolume) > incVol && Math.Min(buyVolume, sellVolume) > incDet && tradeRatio > incRatio))
 			        {
 			            string direction = "";
 						if(isTrendMode && !isRegressionMode){
@@ -712,7 +706,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			{
 			    Dictionary<double, double> aggregatedVolumes = new Dictionary<double, double>();
 			
-			    double segmentSize = 4 *  TickSize; // Assuming you want to aggregate into segments of 4 ticks
+			    double segmentSize = levelstotrade *  TickSize; // Assuming you want to aggregate into segments of 4 ticks
 			
 			    foreach (var kvp in volumes)
 			    {
@@ -765,14 +759,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        tradeParams.RatioThreshold,
 			        entryPrice,
 			        direction,
-			        deltaValues[0],
-			        averageBid,
-			        averageAsk,  // Assuming aggregatedSells is the average ask
-					PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0],
-					highBid,
-					highAsk,
-					Volume[0],
-					trainingMode
+					PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1],
+					PATIMachineLearningInputsV2().BollingerDiff[1],
+					PATIMachineLearningInputsV2().MovingAvgDiff[1],
+					PATIMachineLearningInputsV2().TimeOfDay[1],
+					PATIMachineLearningInputsV2().StdDevBB[1]
+					
 				
 			    )
 			    {
@@ -782,7 +774,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			    tradeParams.Trades.Add(newTrade);
 			    simTrades.Add(newTrade);
 			
-			    Print($"Simulated trade created. Direction: {newTrade.Direction}, ImbVol: {newTrade.ImbVol}, AdvDetection: {newTrade.AdvDetection}, Ratio: {newTrade.Ratio}, EntryPrice: {newTrade.EntryPrice}, Delta: {newTrade.Delta}");
+//			    Print($"Simulated trade created. Direction: {newTrade.Direction}, ImbVol: {newTrade.ImbVol}, AdvDetection: {newTrade.AdvDetection}, Ratio: {newTrade.Ratio}, EntryPrice: {newTrade.EntryPrice}, Delta: {newTrade.Delta}");
 			}
 
 	
@@ -889,14 +881,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        {
 			            if (new FileInfo(filePath).Length == 0)
 			            {
-			                writer.WriteLine("ImbalanceVolume,AdversaryDetection,Ratio,WinRate,Delta,AverageBid,AverageAsk,VolumeSpeed,HighBid,HighAsk,Volume,Mode,Direction,Status");
+			                writer.WriteLine("ImbalanceVolume,AdversaryDetection,Ratio,WinRate,VolumeSpeed,BollingerDiff,MovingAvgDiff,TimeOfDay,StdDevBB,Direction,Status");
 			            }
 			
 			            foreach (var tradeParams in tradeParamsList)
 			            {
 			                foreach (var trade in tradeParams.Trades.Where(t => t.IsCompleted))
 			                {
-			                    writer.WriteLine($"{trade.ImbVol},{trade.AdvDetection},{trade.Ratio},{trade.WinRate},{trade.Delta},{trade.AverageBid},{trade.AverageAsk},{trade.VolumeSpeed},{trade.HighBid},{trade.HighAsk},{trade.Volume},{trade.TradingMode},{trade.Direction},{trade.Status}");
+			                    writer.WriteLine($"{trade.ImbVol},{trade.AdvDetection},{trade.Ratio},{trade.WinRate},{trade.VolumeSpeed},{trade.BolDif},{trade.MADif},{trade.TOD},{trade.StdDev},{trade.Direction},{trade.Status}");
 			                    //Print($"Writing trade to CSV: ImbVol: {trade.ImbVol}, AdvDetection: {trade.AdvDetection}, WinRate: {trade.WinRate}, Delta: {trade.Delta}, BarVolume: {trade.BarVolume}, Direction: {trade.Direction}, Outcome: {trade.Status}");
 			                }
 			            }
@@ -918,27 +910,34 @@ namespace NinjaTrader.NinjaScript.Strategies
 			    using (StreamWriter writer = new StreamWriter(filePath, false)) // false to overwrite existing content
 			    {
 			        // Write headers
-			        writer.WriteLine("Delta,AverageBid,AverageAsk,VolumeSpeed,HighBid,HighAsk,Volume,Mode");
+			        writer.WriteLine("VolumeSpeed,BollingerDiff,MovingAvgDiff,TimeOfDay,StdDevBB");
 			
 			        // Get the current delta values
 			        double currentDelta = deltaValues[0];
 
-					double volVel = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0];
-					double volume = Volume[0];
+					double volVel = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1];
+					double bd = PATIMachineLearningInputsV2().BollingerDiff[1];
+					double mad = PATIMachineLearningInputsV2().MovingAvgDiff[1];
+					double tod = PATIMachineLearningInputsV2().TimeOfDay[1];
+					double std = PATIMachineLearningInputsV2().StdDevBB[1];
 					
 				
 			        // Write the current values to the CSV file
-			        writer.WriteLine($"{currentDelta},{averageBid},{averageAsk},{volVel},{highBid},{highAsk},{volume},{trainingMode}");
+			        writer.WriteLine($"{volVel},{bd},{mad},{tod},{std}");
 			    }
 			
 			
-			    Print("Current predictive values written to CSV.");
+			    //Print("Current predictive values written to CSV.");
 			}
-
+				int prevvol = 0;
+				double prevratio = 0;
+				int prevdet = 0;
 			private void ReadOptimizedParamsFromCSV()
 			{
 			    string filePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\optimized_params.csv"; // Update with the actual path to your CSV file
 			
+				
+				
 			    if (File.Exists(filePath))
 			    {
 			        try
@@ -976,8 +975,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 //									bidDetection = 5;
 //								}
 			                    // Print or use these variables as needed
-			                    Print("Optimized parameters loaded from CSV:");
-			                    Print($"MinVolume: {minVolume}, Ratio: {ratio}, Ask Detection: {askDetection}, Bid Detection: {bidDetection}, Mode: {mode}");
+								if(minVolume != prevvol || prevratio != ratio || prevdet != detectionValue) {
+									
+			                   // Print("Optimized parameters loaded from CSV:");
+			                    Print($"MinVolume: {minVolume}, Ratio: {ratio}, AdvDet:  {detectionValue}");
+								prevvol = minVolume;
+								prevratio = ratio;
+								prevdet = detectionValue;
+								}
 			                    // Here you can use these parameters as needed, for example:
 			                    // SetOptimizedParams(depth, detection_value, iterations, learning_rate, minbvelocity, minsvelocity, minvolume, normal_ratio);
 			                }
@@ -1016,165 +1021,174 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			if(SelectedCalculationMethod == CalculationMethod.NQ)
 			{
-		    CheckAndEnterLong(price, 1);  // Check upwards
-		    CheckAndEnterShort(price, 1); // Check downwards
+		    CheckAndEnterLong(price);  // Check upwards
+		    CheckAndEnterShort(price); // Check downwards
 			}
 			
 		}
 		
-		private void CheckAndEnterLong(double price, int direction)
+		private void CheckAndEnterLong(double price)
 		{
-
-		    double buys = 0;
-		    double sells = 0;
-			int validPriceLevels = 0;
-			double priceToCheck = 0;
-		   
-		    for (int i = -2; i * direction < 2; i ++)
+		    double cumulativeBuys = 0;
+		    double cumulativeSells = 0;
+		    int validPriceLevels = 0;
+		
+		    // Define the range of levels to check
+		    int levelsToCheck = levelstotrade > 1 ? levelstotrade / 2 : 1;
+		    int startLevel = -levelsToCheck;
+		    int endLevel = levelsToCheck;
+		
+		    // Access and sum the values within the range
+		    for (int i = startLevel; i < endLevel; i++)
 		    {
-			    priceToCheck = price + i * TickSize;
-			
-		        if (buysAtBar.ContainsKey(priceToCheck) && sellsAtBar.ContainsKey(priceToCheck))
+		        double priceToCheck = price + i * TickSize;
+		        
+		        // Check if the price level exists in both dictionaries
+		        if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
 		        {
-
-		            buys += buysAtBar[priceToCheck];
-		            sells += sellsAtBar[priceToCheck];
-					
-					 validPriceLevels++;
-				
-			
-
+		            cumulativeBuys += buys;
+		            cumulativeSells += sells;
+		            validPriceLevels++;
 		        }
 		    }
-			double buyRatio = buys/sells;
-			if (validPriceLevels != 4)
-       			return; // Exit if not exactly 4 levels
-				
-			if( isLongMode &&  orderId.Length == 0 && atmStrategyId.Length == 0  && !tradeTaken){
-				if(State == State.Realtime)
-				{
-					
-					if(isRegressionMode  && buys - sells >= minVolume && buyRatio > ratio  && sells >= (MLOn ? detectionValue : detectionValue))/* || (isTrendMode && sells == 0&& lowSpread) || (isRegressionMode && sells == 0 && lowSpread))*/
-					{
-					
-						tradeTaken =true;
-				
-						#region ATMStrat
-			
-								isAtmStrategyCreated = false;  // reset atm strategy created check to false
-								orderId = GetAtmStrategyUniqueId();
-								atmStrategyId = GetAtmStrategyUniqueId();
-								AtmStrategyCreate(OrderAction.Sell, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) => {
-									//check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
-								if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-								isAtmStrategyCreated = true;
-								
-							});
-				
-			
-							
-							#endregion;					
-					}
-					
-					else if(isTrendMode  && buys - sells>= minVolume && buyRatio > ratio && sells >= (MLOn ? detectionValue : detectionValue) )
-					{
-						
-						tradeTaken =true;
-					
-				 		#region ATMStrat
-					
-					// Submits an entry limit order at the current low price to initiate an ATM Strategy if both order id and strategy id are in a reset state
-					// **** YOU MUST HAVE AN ATM STRATEGY TEMPLATE NAMED 'AtmStrategyTemplate' CREATED IN NINJATRADER (SUPERDOM FOR EXAMPLE) FOR THIS TO WORK ****
-						
-						isAtmStrategyCreated = false;  // reset atm strategy created check to false
-						atmStrategyId = GetAtmStrategyUniqueId();
-						orderId = GetAtmStrategyUniqueId();
-						AtmStrategyCreate(OrderAction.Buy, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) => {
-							//check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
-							if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-								isAtmStrategyCreated = true;
-						});
-						
-					#endregion
 		
-					}
-				}
-			}
-		}
-		
-		private void CheckAndEnterShort(double price, int direction)
-		{
-	
-		    double buys = 0;
-		    double sells = 0;
-			double priceToCheck = 0;
-			int validPriceLevels = 0;
-			
-		    // Loop for 4 ticks in the specified direction
-		    for (int i = -2; i * direction <= 2 ; i ++)
+		    // Ensure we have exactly the required number of levels
+		    if (validPriceLevels != levelstotrade)
 		    {
-		        priceToCheck = price + i * TickSize;
+		        return; // Exit if not exactly the required levels
+		    }
 		
-		        if (buysAtBar.ContainsKey(priceToCheck) && sellsAtBar.ContainsKey(priceToCheck) )
+		    double buyRatio = cumulativeBuys / cumulativeSells;
+		
+		    if (isLongMode && orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
+		    {
+		        if (State == State.Realtime)
 		        {
-					buys += buysAtBar[priceToCheck];
-		            sells += sellsAtBar[priceToCheck];
-					validPriceLevels++;
+		            if (isRegressionMode && cumulativeBuys - cumulativeSells >= minVolume && buyRatio > ratio && cumulativeSells >= (MLOn ? detectionValue : detectionValue) && lowSpread)
+		            {
+		                tradeTaken = true;
+		
+		                #region ATMStrat
+		
+		                isAtmStrategyCreated = false;  // reset atm strategy created check to false
+		                orderId = GetAtmStrategyUniqueId();
+		                atmStrategyId = GetAtmStrategyUniqueId();
+		                AtmStrategyCreate(OrderAction.Sell, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) =>
+		                {
+		                    // Check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
+		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                    {
+		                        isAtmStrategyCreated = true;
+		                    }
+		                });
+		
+		                #endregion
+		            }
+		            else if (isTrendMode && cumulativeBuys - cumulativeSells >= minVolume && buyRatio > ratio && cumulativeSells >= (MLOn ? detectionValue : detectionValue) && lowSpread)
+		            {
+		                tradeTaken = true;
+		
+		                #region ATMStrat
+		
+		                isAtmStrategyCreated = false;  // reset atm strategy created check to false
+		                atmStrategyId = GetAtmStrategyUniqueId();
+		                orderId = GetAtmStrategyUniqueId();
+		                AtmStrategyCreate(OrderAction.Buy, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) =>
+		                {
+		                    // Check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
+		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                    {
+		                        isAtmStrategyCreated = true;
+		                    }
+		                });
+		
+		                #endregion
+		            }
 		        }
-				
-		    }
-			
-			double sellRatio = sells/buys;
-		
-			if (validPriceLevels != 4)
-        		return; // Exit if not exactly 4 levels
-		
-		    if ( isShortMode &&  orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
-		    {
-					
-				if(State == State.Realtime){
-					
-					if( isRegressionMode  && sells - buys >= minVolume  && sellRatio > ratio && buys >= (MLOn ? detectionValue : detectionValue) ) /* || (isTrendMode && buys == 0&& lowSpread) || (isRegressionMode && sells == 0 && lowSpread)) */
-					{
-				
-						tradeTaken =true;
-						
-						#region ATMStrat
-					// Submits an entry limit order at the current low price to initiate an ATM Strategy if both order id and strategy id are in a reset state
-					// **** YOU MUST HAVE AN ATM STRATEGY TEMPLATE NAMED 'AtmStrategyTemplate' CREATED IN NINJATRADER (SUPERDOM FOR EXAMPLE) FOR THIS TO WORK ****
-						
-						isAtmStrategyCreated = false;  // reset atm strategy created check to false
-						atmStrategyId = GetAtmStrategyUniqueId();
-						orderId = GetAtmStrategyUniqueId();
-						AtmStrategyCreate(OrderAction.Buy, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) => {
-							//check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
-							if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-								isAtmStrategyCreated = true;
-						});
-						
-						#endregion
-					}
-					else if(isTrendMode && sells - buys >=  minVolume && sellRatio > ratio &&  buys >= (MLOn ? detectionValue : detectionValue) )
-					{
-						
-						tradeTaken =true;
-						
-						#region ATMStrat
-	
-							isAtmStrategyCreated = false;  // reset atm strategy created check to false
-							atmStrategyId = GetAtmStrategyUniqueId();
-							orderId = GetAtmStrategyUniqueId();
-							AtmStrategyCreate(OrderAction.Sell, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) => {
-								//check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
-							if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-							isAtmStrategyCreated = true;
-							
-						});
-						#endregion
-					}
-				}
 		    }
 		}
+
+		private void CheckAndEnterShort(double price)
+		{
+		    double cumulativeBuys = 0;
+		    double cumulativeSells = 0;
+		    int validPriceLevels = 0;
+		
+		    // Define the range of levels to check
+		    int levelsToCheck = levelstotrade > 1 ? levelstotrade / 2 : 1;
+		    int startLevel = -levelsToCheck;
+		    int endLevel = levelsToCheck;
+		
+		    // Access and sum the values within the range
+		    for (int i = startLevel; i < endLevel; i++)
+		    {
+		        double priceToCheck = price + i * TickSize;
+		        
+		        // Check if the price level exists in both dictionaries
+		        if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
+		        {
+		            cumulativeBuys += buys;
+		            cumulativeSells += sells;
+		            validPriceLevels++;
+		        }
+		    }
+		
+		    // Ensure we have exactly the required number of levels
+		    if (validPriceLevels != levelstotrade)
+		    {
+		        return; // Exit if not exactly the required levels
+		    }
+		
+		    double sellRatio = cumulativeSells / cumulativeBuys;
+		
+		    if (isShortMode && orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
+		    {
+		        if (State == State.Realtime)
+		        {
+		            if (isRegressionMode && cumulativeSells - cumulativeBuys >= minVolume && sellRatio > ratio && cumulativeBuys >= (MLOn ? detectionValue : detectionValue) && lowSpread)
+		            {
+		                tradeTaken = true;
+		
+		                #region ATMStrat
+		
+		                isAtmStrategyCreated = false;  // reset atm strategy created check to false
+		                atmStrategyId = GetAtmStrategyUniqueId();
+		                orderId = GetAtmStrategyUniqueId();
+		                AtmStrategyCreate(OrderAction.Buy, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) =>
+		                {
+		                    // Check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
+		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                    {
+		                        isAtmStrategyCreated = true;
+		                    }
+		                });
+		
+		                #endregion
+		            }
+		            else if (isTrendMode && cumulativeSells - cumulativeBuys >= minVolume && sellRatio > ratio && cumulativeBuys >= (MLOn ? detectionValue : detectionValue) && lowSpread)
+		            {
+		                tradeTaken = true;
+		
+		                #region ATMStrat
+		
+		                isAtmStrategyCreated = false;  // reset atm strategy created check to false
+		                atmStrategyId = GetAtmStrategyUniqueId();
+		                orderId = GetAtmStrategyUniqueId();
+		                AtmStrategyCreate(OrderAction.Sell, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) =>
+		                {
+		                    // Check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
+		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                    {
+		                        isAtmStrategyCreated = true;
+		                    }
+		                });
+		
+		                #endregion
+		            }
+		        }
+		    }
+		}
+
 		
 		private void UpdateHighsAndLows()
 		{
@@ -1315,14 +1329,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{ get; set; }
 		
 		
+		[NinjaScriptProperty]
+		[Display(Name="Adversary Detection ", Order=4, GroupName="Imbalances")]
+		public int detectionValue
+		{ get; set; }
+		
 			[NinjaScriptProperty]
-		[Display(Name="Calculation Method", Order=4, GroupName="Imbalances")]
+		[Display(Name="Calculation Method", Order=5, GroupName="Imbalances")]
 		public CalculationMethod SelectedCalculationMethod { get; set; }
 		
 		[NinjaScriptProperty]
-		[Display(Name="Adversary Detection ", Order=7, GroupName="Imbalances")]
-		public int detectionValue
-		{ get; set; }
+		[Display(Name="tick levels to trade", Order=5, GroupName="Imbalances")]
+		public int levelstotrade { get; set; }
 		
 		
 		[NinjaScriptProperty]
@@ -1336,17 +1354,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{ get; set; }
 		
 		[NinjaScriptProperty]
-		[Display( Name = "SL for ML", GroupName = "Machine Learning", Order = 0)]
+		[Display( Name = "SL for ML", GroupName = "Machine Learning Targets", Order = 0)]
 		public int StopLoss
 		{ get; set; }
 		
 		[NinjaScriptProperty]
-		[Display( Name = "PT for ML", GroupName = "Machine Learning", Order = 0)]
+		[Display( Name = "PT for ML", GroupName = "Machine Learning Targets", Order = 0)]
 		public int ProfitTarget
 		{ get; set; }
 		
 		[NinjaScriptProperty]
-		[Display( Name = "Target WinRate", GroupName = "Machine Learning", Order = 0)]
+		[Display( Name = "Target WinRate", GroupName = "Machine Learning Targets", Order = 0)]
 		public double targetWinRate
 		{ get; set; } 
 		
@@ -1361,12 +1379,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{ get; set; } 
 		
 		[NinjaScriptProperty]
-		[Display( Name = "Train the model", GroupName = "Machine Learning", Order = 0)]
+		[Display( Name = "Train the model", GroupName = "Machine Learning Training", Order = 0)]
 		public bool trainModel
 		{ get; set; } 
+		
 		[NinjaScriptProperty]
-		[Display( Name = "Incrementally Train the model", GroupName = "Machine Learning", Order = 0)]
+		[Display( Name = "Allow incremental learning", GroupName = "Machine Learning Incremental Training", Order = 0)]
 		public bool incTrain
+		{ get; set; } 
+		
+		[NinjaScriptProperty]
+		[Display( Name = "Min Volume for inc training", GroupName = "Machine Learning Incremental Training", Order = 0)]
+		public double incVol
+		{ get; set; } 
+		
+		[NinjaScriptProperty]
+		[Display( Name = "Min Ratio for inc training", GroupName = "Machine Learning Incremental Training", Order = 0)]
+		public double incRatio
+		{ get; set; } 
+		
+		[NinjaScriptProperty]
+		[Display( Name = "Min Detection for inc training", GroupName = "Machine Learning Incremental Training", Order = 0)]
+		public double incDet
 		{ get; set; } 
 		
 		[NinjaScriptProperty]

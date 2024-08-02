@@ -254,7 +254,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				{
 					myGrid = new System.Windows.Controls.Grid
 					{
-						Name = "MyCustomGrid", HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,    Margin = new Thickness(0, 0, 0, 40) // Adjust the bottom margin as needed
+						Name = "MyCustomGrid", HorizontalAlignment = HorizontalAlignment.Right, VerticalAlignment = VerticalAlignment.Bottom,    Margin = new Thickness(0, 0, 0, 60) // Adjust the bottom margin as needed
 					};
 					
 					System.Windows.Controls.ColumnDefinition column1 = new System.Windows.Controls.ColumnDefinition();
@@ -621,12 +621,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 				//Print(atmStrategyId + " empty string");
 		
 				
-				if (atmStrategyId.Length > 0 )
-				{
+//				if (atmStrategyId.Length > 0 )
+//				{
 				    
-				    if (GetAtmStrategyMarketPosition(atmStrategyId) != Cbi.MarketPosition.Flat)
-				    {
-//				         Disable all trading modes after a successful trade
+//				    if (GetAtmStrategyMarketPosition(atmStrategyId) != Cbi.MarketPosition.Flat)
+//				    {
+//				         //Disable all trading modes after a successful trade
 //				        Dispatcher.Invoke(() =>
 //				        {
 //				            isLongMode = false;
@@ -643,8 +643,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 //						});
 						
 
-				    }
-				}
+//				    }
+//				}
 				
 			
 		}
@@ -735,7 +735,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                tradeRatio = buyVolume > 0 ? (double)sellVolume / buyVolume : sellVolume;
 			            }
 			
-			            if (Math.Abs(buyVolume - sellVolume) > minVolume && Math.Min(buyVolume, sellVolume) > detectionValue && tradeRatio > ratio)
+			            if (incTrain ? (Math.Abs(buyVolume - sellVolume) > incVol && Math.Min(buyVolume, sellVolume) > incDet && tradeRatio > incRatio) : (Math.Abs(buyVolume - sellVolume) > minVolume && Math.Min(buyVolume, sellVolume) > detectionValue && tradeRatio > ratio))
 			            {
 			                string direction = buyVolume > sellVolume ? (isTrendMode ? "Long" : "Short") : (isTrendMode ? "Short" : "Long");
 			                TradeParameters tradeParams = new TradeParameters(Math.Abs(buyVolume - sellVolume), Math.Min(buyVolume, sellVolume), tradeRatio, direction, tradeWindowEndTime);
@@ -763,7 +763,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			            double sellVolume = sellsAtBar.ContainsKey(price - TickSize) ? sellsAtBar[price - TickSize] : 0;
 			            double tradeRatio = buyVolume > sellVolume ? (sellVolume > 0 ? buyVolume / sellVolume : buyVolume) : (buyVolume > 0 ? sellVolume / buyVolume : sellVolume);
 			
-			            if (Math.Abs(buyVolume - sellVolume) > minVolume && Math.Min(buyVolume, sellVolume) > detectionValue && tradeRatio > ratio)
+			            if (incTrain ? (Math.Abs(buyVolume - sellVolume) > incVol && Math.Min(buyVolume, sellVolume) > incDet && tradeRatio > incRatio) : (Math.Abs(buyVolume - sellVolume) > minVolume && Math.Min(buyVolume, sellVolume) > detectionValue && tradeRatio > ratio))
 			            {
 			                string direction = buyVolume > sellVolume ? (isTrendMode ? "Long" : "Short") : (isTrendMode ? "Short" : "Long");
 			                TradeParameters tradeParams = new TradeParameters((int)Math.Ceiling((double)Math.Abs(buyVolume - sellVolume) / levelstotrade), (int)Math.Ceiling((double)Math.Min(buyVolume, sellVolume) / levelstotrade), tradeRatio, direction, tradeWindowEndTime);
@@ -1184,6 +1184,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                });
 		
 		                #endregion
+						resetButtons();
 		            }
 		            else if (isTrendMode && cumulativeBuys - cumulativeSells >= minVolume && buyRatio > ratio && cumulativeSells >= (MLOn ? detectionValue : detectionValue) && lowSpread)
 		            {
@@ -1204,6 +1205,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                });
 		
 		                #endregion
+						resetButtons();
 		            }
 		        }
 		    }
@@ -1265,6 +1267,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                });
 		
 		                #endregion
+						resetButtons();
 		            }
 		            else if (isTrendMode && cumulativeSells - cumulativeBuys >= minVolume && sellRatio > ratio && cumulativeBuys >= (MLOn ? detectionValue : detectionValue) && lowSpread)
 		            {
@@ -1285,6 +1288,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                });
 		
 		                #endregion
+						resetButtons();
 		            }
 		        }
 		    }
@@ -1341,6 +1345,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                });
 		
 		                #endregion
+						resetButtons();
 		            }
 		            else if (isTrendMode && validPriceLevels == levelstotrade)
 		            {
@@ -1361,6 +1366,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                });
 		
 		                #endregion
+						resetButtons();
 		            }
 		        }
 		    }
@@ -1418,6 +1424,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                });
 		
 		                #endregion
+						resetButtons();
 		            }
 		            else if (isTrendMode && validPriceLevels == levelstotrade)
 		            {
@@ -1438,9 +1445,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                });
 		
 		                #endregion
+						resetButtons();
 		            }
 		        }
 		    }
+		}
+		
+		private void resetButtons()
+		{
+		    Dispatcher.Invoke(() =>
+	        {
+	            isLongMode = false;
+	            isShortMode = false;
+				isAutoArm = false;
+	            shortButton.Content = "Arm Short";
+	            longButton.Content = "Arm Long";
+				armButton.Content = "Auto Arm Off";
+//							Print("The current ATM Strategy market position is: " + GetAtmStrategyMarketPosition(atmStrategyId));
+//							Print("The current ATM Strategy position quantity is: " + GetAtmStrategyPositionQuantity(atmStrategyId));
+//							Print("The current ATM Strategy average price is: " + GetAtmStrategyPositionAveragePrice(atmStrategyId));
+//							Print("The current ATM Strategy Unrealized PnL is: " + GetAtmStrategyUnrealizedProfitLoss(atmStrategyId));
+//							 Print("PnL is " + GetAtmStrategyRealizedProfitLoss(atmStrategyId));
+			});
 		}
 
 		

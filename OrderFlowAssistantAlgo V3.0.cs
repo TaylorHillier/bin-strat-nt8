@@ -442,18 +442,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 									if(buyVolume > sellVolume)
 									{
 										 tradeRatio = sellVolume > 0 ? buyVolume/sellVolume : buyVolume;
-										 if(isTrendMode){
+										 
 										direction = "Long";
-										} else if (isRegressionMode){
-											direction = "Short";
-										}
+										
 									} else if(sellVolume > buyVolume) {
 										tradeRatio = buyVolume > 0 ? sellVolume/buyVolume : sellVolume;
-										if(isTrendMode){
+									
 										direction = "Short";
-										} else if (isRegressionMode){
-											direction = "Long";
-										}
+										
 									}
 									
 									//Print($"Price: {price}, BuyVolume: {buyVolume}, SellVolume: {sellVolume}, ImbVol: {imbVol}, AdvDetection: {advDetection}, TradeRatio: {tradeRatio}");
@@ -737,7 +733,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 			            if (incTrain ? (Math.Abs(buyVolume - sellVolume) > incVol && Math.Min(buyVolume, sellVolume) > incDet && tradeRatio > incRatio) : (Math.Abs(buyVolume - sellVolume) > minVolume && Math.Min(buyVolume, sellVolume) > detectionValue && tradeRatio > ratio))
 			            {
-			                string direction = buyVolume > sellVolume ? (isTrendMode ? "Long" : "Short") : (isTrendMode ? "Short" : "Long");
+			                string direction = buyVolume > sellVolume ? "Long" : "Short";
 			                TradeParameters tradeParams = new TradeParameters(Math.Abs(buyVolume - sellVolume), Math.Min(buyVolume, sellVolume), tradeRatio, direction, tradeWindowEndTime);
 			                tradeParamsList.Add(tradeParams);
 			                if (!incTrain)
@@ -765,7 +761,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 			            if (incTrain ? (Math.Abs(buyVolume - sellVolume) > incVol && Math.Min(buyVolume, sellVolume) > incDet && tradeRatio > incRatio) : (Math.Abs(buyVolume - sellVolume) > minVolume && Math.Min(buyVolume, sellVolume) > detectionValue && tradeRatio > ratio))
 			            {
-			                string direction = buyVolume > sellVolume ? (isTrendMode ? "Long" : "Short") : (isTrendMode ? "Short" : "Long");
+			                string direction = buyVolume > sellVolume ? "Long" : "Short";
 			                TradeParameters tradeParams = new TradeParameters((int)Math.Ceiling((double)Math.Abs(buyVolume - sellVolume) / levelstotrade), (int)Math.Ceiling((double)Math.Min(buyVolume, sellVolume) / levelstotrade), tradeRatio, direction, tradeWindowEndTime);
 			                tradeParamsList.Add(tradeParams);
 			                if (!incTrain)
@@ -840,11 +836,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        tradeParams.RatioThreshold,
 			        entryPrice,
 			        direction,
-					PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1],
-					PATIMachineLearningInputsV2().BollingerDiff[1],
-					PATIMachineLearningInputsV2().MovingAvgDiff[1],
-					PATIMachineLearningInputsV2().TimeOfDay[1],
-					PATIMachineLearningInputsV2().StdDevBB[1]
+					PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0],
+					PATIMachineLearningInputsV2().BollingerDiff[0],
+					PATIMachineLearningInputsV2().MovingAvgDiff[0],
+					PATIMachineLearningInputsV2().TimeOfDay[0],
+					PATIMachineLearningInputsV2().StdDevBB[0]
 					
 				
 			    )
@@ -966,6 +962,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        filePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\train_model.csv";
 			    }
 			
+				
 			    try
 			    {
 			        string directory = Path.GetDirectoryName(filePath);
@@ -983,9 +980,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 			            foreach (var tradeParams in completedTradeParams)
 			            {
+							
 			                foreach (var trade in tradeParams.Trades.Where(t => t.IsCompleted))
 			                {
-			                    writer.WriteLine($"{trade.ImbVol},{trade.AdvDetection},{trade.Ratio},{trade.WinRate},{trade.VolumeSpeed},{trade.BolDif},{trade.MADif},{trade.TOD},{trade.StdDev},{trade.Direction},{trade.Status}");
+								double wr = Math.Round(trade.WinRate,2);
+								double r = Math.Round(trade.Ratio, 2);
+			                    writer.WriteLine($"{trade.ImbVol},{trade.AdvDetection},{r},{wr},{trade.VolumeSpeed},{trade.BolDif},{trade.MADif},{trade.TOD},{trade.StdDev},{trade.Direction},{trade.Status}");
 			                }
 			            }
 			        }
@@ -1010,11 +1010,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        // Get the current delta values
 			        double currentDelta = deltaValues[0];
 
-					double volVel = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1];
-					double bd = PATIMachineLearningInputsV2().BollingerDiff[1];
-					double mad = PATIMachineLearningInputsV2().MovingAvgDiff[1];
-					double tod = PATIMachineLearningInputsV2().TimeOfDay[1];
-					double std = PATIMachineLearningInputsV2().StdDevBB[1];
+					double volVel = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0];
+					double bd = PATIMachineLearningInputsV2().BollingerDiff[0];
+					double mad = PATIMachineLearningInputsV2().MovingAvgDiff[0];
+					double tod = PATIMachineLearningInputsV2().TimeOfDay[0];
+					double std = PATIMachineLearningInputsV2().StdDevBB[0];
 					
 				
 			        // Write the current values to the CSV file
@@ -1302,7 +1302,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    int levelsToCheck = levelstotrade;
 		
 		    // Access and sum the values within the range
-		    for (int i = 0; i < levelsToCheck; i++)
+		    for (int i = 0; i < levelsToCheck + (allowTickGap ? 1 : 0); i++)
 		    {
 		        double priceToCheck = price - i * TickSize;
 		        
@@ -1380,7 +1380,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    int levelsToCheck = levelstotrade;
 		
 		    // Access and sum the values within the range
-		    for (int i = 0; i < levelsToCheck; i++)
+		    for (int i = 0; i < levelsToCheck + (allowTickGap ? 1 : 0); i++)
 		    {
 		        double priceToCheck = price + i * TickSize;
 		        
@@ -1612,6 +1612,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[NinjaScriptProperty]
 		[Display(Name="Adversary Detection ", Order=4, GroupName="Imbalances")]
 		public int detectionValue
+		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="Allow Gap for ES", Order=5, GroupName="Imbalances")]
+		public bool allowTickGap
 		{ get; set; }
 		
 			[NinjaScriptProperty]

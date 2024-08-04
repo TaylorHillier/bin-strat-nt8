@@ -159,6 +159,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private List<SimTrade> simTrades = new List<SimTrade>();
 	    private DateTime lastSampleTime = DateTime.MinValue;
 		private List<SimTrade> initialSimTrades = new List<SimTrade>();
+		private DateTime lastDay = DateTime.MinValue;
 		
 		private DateTime predValueWrite = DateTime.MinValue;
 		
@@ -422,6 +423,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				 DateTime currentTime = Time[0];
 			 	
+				if(Time[0] - lastDay > TimeSpan.FromHours(1)){
+					
+				Print("Current Date:" + Time[0]);
+					lastDay = Time[0];
+				}
 				if(initialLetters == "NQ"){
 			   
 						
@@ -736,10 +742,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                string direction = buyVolume > sellVolume ? "Long" : "Short";
 			                TradeParameters tradeParams = new TradeParameters(Math.Abs(buyVolume - sellVolume), Math.Min(buyVolume, sellVolume), tradeRatio, direction, tradeWindowEndTime);
 			                tradeParamsList.Add(tradeParams);
-			                if (!incTrain)
-			                {
-			                    Print($"Initialized trade parameters: ImbVol: {Math.Abs(buyVolume - sellVolume)}, AdvDetection: {Math.Min(buyVolume, sellVolume)}, Ratio: {tradeRatio}, Direction: {direction}");
-			                }
+//			                if (!incTrain)
+//			                {
+//			                    Print($"Initialized trade parameters: ImbVol: {Math.Abs(buyVolume - sellVolume)}, AdvDetection: {Math.Min(buyVolume, sellVolume)}, Ratio: {tradeRatio}, Direction: {direction}");
+//			                }
 			                sampledLevels.Add(price);
 			            }
 			        }
@@ -764,10 +770,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                string direction = buyVolume > sellVolume ? "Long" : "Short";
 			                TradeParameters tradeParams = new TradeParameters((int)Math.Ceiling((double)Math.Abs(buyVolume - sellVolume) / levelstotrade), (int)Math.Ceiling((double)Math.Min(buyVolume, sellVolume) / levelstotrade), tradeRatio, direction, tradeWindowEndTime);
 			                tradeParamsList.Add(tradeParams);
-			                if (!incTrain)
-			                {
-			                    Print($"Initialized trade parameters: ImbVol: {Math.Abs(buyVolume - sellVolume)}, AdvDetection: {Math.Min(buyVolume, sellVolume)}, Ratio: {tradeRatio}");
-			                }
+//			                if (!incTrain)
+//			                {
+//			                    Print($"Initialized trade parameters: ImbVol: {Math.Abs(buyVolume - sellVolume)}, AdvDetection: {Math.Min(buyVolume, sellVolume)}, Ratio: {tradeRatio}");
+//			                }
 			                sampledLevels.Add(price);
 			
 			                // Stop after finding the first valid imbalance
@@ -821,10 +827,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			private void SimulateTrade(TradeParameters tradeParams, string direction)
 			{
 			    double entryPrice = Close[0];  // Use the current close price as the entry price
-				if(!incTrain)
-				{
-			    Print($"Simulating trade with parameters: ImbVol: {tradeParams.ImbVolThreshold}, AdvDetection: {tradeParams.AdvDetectionThreshold}, Ratio: {tradeParams.RatioThreshold}, Direction: {direction}");
-				}
+//				if(!incTrain)
+//				{
+//			    Print($"Simulating trade with parameters: ImbVol: {tradeParams.ImbVolThreshold}, AdvDetection: {tradeParams.AdvDetectionThreshold}, Ratio: {tradeParams.RatioThreshold}, Direction: {direction}");
+//				}
 			    double delta = buysAtBar.Values.Sum() - sellsAtBar.Values.Sum();
 			    
 			    // Update the delta values
@@ -876,10 +882,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                trade.WinCount++;
 			                tradeUpdated = true;
 			                trade.IsCompleted = true;
-							if(!incTrain)
-								{
-			                Print($"Trade target hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
-								}
+//							if(!incTrain)
+//								{
+//			                Print($"Trade target hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
+//								}
 			            }
 			            else if (currentPrice <= entryPrice - (stopLoss * TickSize))
 			            {
@@ -887,10 +893,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                trade.LossCount++;
 			                tradeUpdated = true;
 			                trade.IsCompleted = true;
-							if(!incTrain)
-								{
-			                Print($"Trade stop loss hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
-								}
+//							if(!incTrain)
+//								{
+//			                Print($"Trade stop loss hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
+//								}
 			            }
 			        }
 			        else if (positionType == "Short")
@@ -901,10 +907,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                trade.WinCount++;
 			                tradeUpdated = true;
 			                trade.IsCompleted = true;
-							if(!incTrain)
-								{
-			                Print($"Trade target hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
-								}
+//							if(!incTrain)
+//								{
+//			                Print($"Trade target hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
+//								}
 			            }
 			            else if (currentPrice >= entryPrice + (stopLoss * TickSize))
 			            {
@@ -912,10 +918,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                trade.LossCount++;
 			                tradeUpdated = true;
 			                trade.IsCompleted = true;
-							if(!incTrain)
-								{
-			                Print($"Trade stop loss hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
-								}
+//							if(!incTrain)
+//								{
+//			                Print($"Trade stop loss hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
+//								}
 			            }
 			        }
 			
@@ -923,12 +929,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        {
 			            trade.TradeCount++;
 			            trade.UpdateWinRate();
-						if(!incTrain)
-								{
-			            Print($"Trade updated. Direction: {trade.Direction}, Status: {trade.Status}, WinRate: {trade.WinRate}");
-								}
+//						if(!incTrain)
+//								{
+//			            Print($"Trade updated. Direction: {trade.Direction}, Status: {trade.Status}, WinRate: {trade.WinRate}");
+//								}
 			        }
 			    }
+				
+				simTrades.RemoveAll(trade => trade.IsCompleted);
 			
 			   // Print("Simulated trades update complete.");
 			}
@@ -946,7 +954,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        trade.WinRate = winRate;
 			    }
 			
-			    Print($"Win Rate for trade type (ImbVol: {tradeParams.ImbVolThreshold}, AdvDetection: {tradeParams.AdvDetectionThreshold}): {winRate:P2}");
+			   // Print($"Win Rate for trade type (ImbVol: {tradeParams.ImbVolThreshold}, AdvDetection: {tradeParams.AdvDetectionThreshold}): {winRate:P2}");
 			}
 
 			

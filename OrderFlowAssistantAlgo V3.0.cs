@@ -48,13 +48,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double MADif { get; set; }
 		public double TOD { get; set; }
 		public double StdDev { get; set; }
-
+		public double Min { get; set; }
+		public double Max { get; set; }
+		public double BSPB { get; set; }
+		public double BSPS { get; set; }
+		public double Mom { get; set; }
+		public double OBV { get; set; }
+		
 		public int WinCount { get; set; } = 0;
 		public int LossCount { get; set; } = 0;
 		public bool IsCompleted { get; set; } = false;
 		
 		
-		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string direction,double volumeSpeed, double bolDif, double maDif, double tod, double stdDev)
+		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string direction,double volumeSpeed, double bolDif, double maDif, double tod, double stdDev, double min, double max, double mom, double obv)
 		{
 		    ImbVol = imbVol;
 		    AdvDetection = advDetection;
@@ -66,6 +72,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			MADif = maDif;
 			TOD = tod;
 			StdDev = stdDev;
+			Min = min;
+			Max = max;
+			Mom = mom;
+			OBV = obv;
 			
 		}
 		
@@ -395,18 +405,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			if (trainModel || incTrain)
 			{
-				if(!incTrain)
-				{
-					if(regressForTrain){
-						isRegressionMode = true;
-						isTrendMode = false;
-						trainingMode = 1;
-					} else {
-						isTrendMode = true;
-						isRegressionMode = false;
-						trainingMode = 0;
-					}
-				}
 			
 			 if (CurrentBar < 2) return;
 			
@@ -495,7 +493,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 			                // Check for long trades starting at the current price and going down
 			                int validLongLevels = 0;		  
-			                for (int i = 0; i < levelstotrade + (allowTickGap ? 1 : 0); i++)
+			                for (int i = 0; i < imbalancestotrade + (allowTickGap ? 1 : 0); i++)
 			                {
 			                    double priceToCheck = price - i * TickSize;
 			                    if (buysAtBar.TryGetValue(priceToCheck, out double askVolume) && sellsAtBar.TryGetValue(priceToCheck - TickSize, out double bidVolume))
@@ -506,14 +504,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                        }
 			                    }
 			                }
-			                if (validLongLevels == levelstotrade)
+			                if (validLongLevels == imbalancestotrade)
 			                {
 			                    isLong = true;
 			                }
 			
 			                // Check for short trades starting at the current price and going up
 			                int validShortLevels = 0;
-			                for (int i = 0; i < levelstotrade + (allowTickGap ? 1 : 0); i++)
+			                for (int i = 0; i < imbalancestotrade + (allowTickGap ? 1 : 0); i++)
 			                {
 			                    double priceToCheck = price + i * TickSize;
 			                    if (sellsAtBar.TryGetValue(priceToCheck, out double bidVolume) && buysAtBar.TryGetValue(priceToCheck + TickSize, out double askVolume))
@@ -524,7 +522,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                        }
 			                    }
 			                }
-			                if (validShortLevels == levelstotrade)
+			                if (validShortLevels == imbalancestotrade)
 			                {
 			                    isShort = true;
 			                }
@@ -574,7 +572,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 			}
 	
-		    if (CurrentBar != activeBar)
+		    if (CurrentBar != activeBar )
 		    {
 				UpdateDeltaValues(Delta);
 		
@@ -624,7 +622,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 			
-			if(State == State.Historical && e.MarketDataType == MarketDataType.Last)
+			if(State == State.Historical && e.MarketDataType == MarketDataType.Last && trainModel)
 			{
 				  double price = e.Price;
 		        double volume = e.Volume;
@@ -818,9 +816,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 					PATIMachineLearningInputsV2().BollingerDiff[0],
 					PATIMachineLearningInputsV2().MovingAvgDiff[0],
 					PATIMachineLearningInputsV2().TimeOfDay[0],
-					PATIMachineLearningInputsV2().StdDevBB[0]
-					
-				
+					PATIMachineLearningInputsV2().StdDevBB[0],
+					MIN(Low, 14)[0],
+					MAX(High,14)[0],
+					Momentum(40)[0],
+					OBV()[0]
 			    )
 			    {
 			        WindowId = currentWindowId
@@ -956,7 +956,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        {
 			            if (new FileInfo(filePath).Length == 0)
 			            {
-			                writer.WriteLine("ImbalanceVolume,AdversaryDetection,Ratio,WinRate,VolumeSpeed,BollingerDiff,MovingAvgDiff,TimeOfDay,StdDevBB,TradeCount");
+			                writer.WriteLine("ImbalanceVolume,AdversaryDetection,Ratio,WinRate,VolumeSpeed,BollingerDiff,MovingAvgDiff,TimeOfDay,StdDevBB,Min,Max,Mom,OBV,TradeCount");
 			            }
 			
 			            foreach (var tradeParams in completedTradeParams)
@@ -984,8 +984,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 								double mad = Math.Round(firstCompletedTrade.MADif,2);
 								double tod = Math.Round(firstCompletedTrade.TOD,2);
 								double std = Math.Round(firstCompletedTrade.StdDev,2);
+								double min = Math.Round(firstCompletedTrade.Min, 2);
+								double max = Math.Round(firstCompletedTrade.Max, 2);
+								double mom = Math.Round(firstCompletedTrade.Mom, 2);
+								double obv = Math.Round(firstCompletedTrade.OBV, 2);
 								int tc = firstCompletedTrade.TradeCount;
-							    writer.WriteLine($"{firstCompletedTrade.ImbVol},{firstCompletedTrade.AdvDetection},{r},{wr},{volVel},{bd},{mad},{tod},{std},{tc}");
+							    writer.WriteLine($"{firstCompletedTrade.ImbVol},{firstCompletedTrade.AdvDetection},{r},{wr},{volVel},{bd},{mad},{tod},{std},{min},{max},{mom},{obv},{tc}");
 							}
 							
 							
@@ -1008,7 +1012,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			    using (StreamWriter writer = new StreamWriter(filePath, false)) // false to overwrite existing content
 			    {
 			        // Write headers
-			        writer.WriteLine("VolumeSpeed,BollingerDiff,MovingAvgDiff,TimeOfDay,StdDevBB");
+			        writer.WriteLine("VolumeSpeed,BollingerDiff,MovingAvgDiff,TimeOfDay,StdDevBB,Min,Max,Mom,OBV");
 			
 			        // Get the current delta values
 			        double currentDelta = deltaValues[0];
@@ -1018,10 +1022,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 					double mad = Math.Round(PATIMachineLearningInputsV2().MovingAvgDiff[0],2);
 					double tod = Math.Round(PATIMachineLearningInputsV2().TimeOfDay[0],2);
 					double std = Math.Round(PATIMachineLearningInputsV2().StdDevBB[0],2);
+					double min = Math.Round(MIN(Low, 14)[0], 2);
+					double max = Math.Round(MAX(High, 14)[0], 2);
+					double mom = Math.Round(Momentum(40)[0], 2);
+					double obv = Math.Round(OBV()[0], 2);
 					
 				
 			        // Write the current values to the CSV file
-			        writer.WriteLine($"{volVel},{bd},{mad},{tod},{std}");
+			        writer.WriteLine($"{volVel},{bd},{mad},{tod},{std},{min},{max},{mom},{obv}");
 			    }
 			
 			
@@ -1139,37 +1147,52 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		    // Define the range of levels to check
 		    int levelsToCheck = levelstotrade > 1 ? levelstotrade / 2 : 1;
-		    int startLevel = -levelsToCheck;
-		    int endLevel = levelsToCheck;
-		
+		    double startLevel = -levelsToCheck;
+		    double endLevel = levelsToCheck;
+			
+			int validImb = 0;
+			
+			int numImb = imbalancestotrade;
 		    // Access and sum the values within the range
-		    for (int i = startLevel; i < endLevel; i++)
-		    {
-		        double priceToCheck = price + i * TickSize;
-		        
-		        // Check if the price level exists in both dictionaries
-		        if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
-		        {
-		            cumulativeBuys += buys;
-		            cumulativeSells += sells;
+			for(int i = 0; i < numImb; i++){
+				cumulativeBuys = 0;
+				cumulativeSells = 0;
+				validPriceLevels = 0;
+			    for (double j = startLevel; j < endLevel; j++)
+			    {
+			        double priceToCheck = price + j * TickSize;
+			        
+			        // Check if the price level exists in both dictionaries
+			        if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
+			        {
+			            cumulativeBuys += buys;
+			            cumulativeSells += sells;
+					
+			            validPriceLevels++;
+			        }
+			    }
 				
-		            validPriceLevels++;
-		        }
-		    }
+				double buyRatio = cumulativeBuys / cumulativeSells;
+			
+				
+				if(cumulativeBuys - cumulativeSells >= minVolume && buyRatio > ratio && cumulativeSells >= detectionValue && validPriceLevels == levelstotrade){
+					validImb++;
+				}
+				
+				
+				startLevel = startLevel - (numImb * levelstotrade * TickSize);
+				endLevel = endLevel - (numImb * levelstotrade * TickSize);
+				
+				
+				
+			}
 		
-		    // Ensure we have exactly the required number of levels
-		    if (validPriceLevels != levelstotrade)
-		    {
-		        return; // Exit if not exactly the required levels
-		    }
-		
-		    double buyRatio = cumulativeBuys / cumulativeSells;
 			
 		    if (isLongMode && orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
 		    {
 		        if (State == State.Realtime)
 		        {
-		            if (isRegressionMode && cumulativeBuys - cumulativeSells >= minVolume && buyRatio > ratio && cumulativeSells >= detectionValue)
+		            if (isRegressionMode && validImb == numImb)
 		            {
 		                tradeTaken = true;
 		
@@ -1190,7 +1213,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                #endregion
 						resetButtons();
 		            }
-		            else if (isTrendMode && cumulativeBuys - cumulativeSells >= minVolume && buyRatio > ratio && cumulativeSells >= detectionValue)
+		            else if (isTrendMode && validImb == numImb)
 		            {
 		                tradeTaken = true;
 		
@@ -1223,36 +1246,50 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		    // Define the range of levels to check
 		    int levelsToCheck = levelstotrade > 1 ? levelstotrade / 2 : 1;
-		    int startLevel = -levelsToCheck;
-		    int endLevel = levelsToCheck;
+		    double startLevel = -levelsToCheck;
+		    double endLevel = levelsToCheck;
 		
-		    // Access and sum the values within the range
-		    for (int i = startLevel; i < endLevel; i++)
-		    {
-		        double priceToCheck = price + i * TickSize;
-		        
-		        // Check if the price level exists in both dictionaries
-		        if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
-		        {
-		            cumulativeBuys += buys;
-		            cumulativeSells += sells;
-		            validPriceLevels++;
-		        }
-		    }
+				int validImb = 0;
+			
+			int numImb = imbalancestotrade;
+			
+			for(int i = 0; i < numImb; i++){
+				
+				cumulativeBuys = 0;
+				cumulativeSells = 0;
+				validPriceLevels = 0;
+			    for (double j = startLevel; j < endLevel; j++)
+			    {
+			        double priceToCheck = price + j * TickSize;
+			        
+			        // Check if the price level exists in both dictionaries
+			        if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
+			        {
+			            cumulativeBuys += buys;
+			            cumulativeSells += sells;
+					
+			            validPriceLevels++;
+						
+			        }
+			    }
+				
+				double sellRatio = cumulativeSells / cumulativeBuys;
+				
+				if(cumulativeSells - cumulativeBuys >= minVolume && sellRatio > ratio && cumulativeBuys >= detectionValue && validPriceLevels == levelstotrade){
+					validImb++;
+				}
+				
+				startLevel = startLevel + (numImb * levelstotrade * TickSize);
+				endLevel = endLevel + (numImb * levelstotrade * TickSize);
+				
+			}
 		
-		    // Ensure we have exactly the required number of levels
-		    if (validPriceLevels != levelstotrade)
-		    {
-		        return; // Exit if not exactly the required levels
-		    }
-		
-		    double sellRatio = cumulativeSells / cumulativeBuys;
 		
 		    if (isShortMode && orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
 		    {
 		        if (State == State.Realtime)
 		        {
-		            if (isRegressionMode && cumulativeSells - cumulativeBuys >= minVolume && sellRatio > ratio && cumulativeBuys >= detectionValue)
+		            if (isRegressionMode && validImb == numImb)
 		            {
 		                tradeTaken = true;
 		
@@ -1273,7 +1310,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                #endregion
 						resetButtons();
 		            }
-		            else if (isTrendMode && cumulativeSells - cumulativeBuys >= minVolume && sellRatio > ratio && cumulativeBuys >= detectionValue)
+		            else if (isTrendMode && validImb == numImb)
 		            {
 		                tradeTaken = true;
 		
@@ -1303,7 +1340,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    int validPriceLevels = 0;
 		
 		    // Define the range of levels to check
-		    int levelsToCheck = levelstotrade;
+		    int levelsToCheck = imbalancestotrade;
 		
 		    // Access and sum the values within the range
 		    for (int i = 0; i < levelsToCheck + (allowTickGap ? 1 : 0); i++)
@@ -1321,7 +1358,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		
 		    // Ensure we have exactly the required number of levels
-		    if (validPriceLevels != levelstotrade)
+		    if (validPriceLevels != imbalancestotrade)
 		    {
 		        return; // Exit if not exactly the required levels
 		    }
@@ -1381,7 +1418,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    int validPriceLevels = 0;
 		
 		    // Define the range of levels to check
-		    int levelsToCheck = levelstotrade;
+		    int levelsToCheck = imbalancestotrade;
 		
 		    // Access and sum the values within the range
 		    for (int i = 0; i < levelsToCheck + (allowTickGap ? 1 : 0); i++)
@@ -1400,7 +1437,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		
 		    // Ensure we have exactly the required number of levels
-		    if (validPriceLevels != levelstotrade)
+		    if (validPriceLevels != imbalancestotrade)
 		    {
 		        return; // Exit if not exactly the required levels
 		    }
@@ -1628,8 +1665,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public CalculationMethod SelectedCalculationMethod { get; set; }
 		
 		[NinjaScriptProperty]
-		[Display(Name="tick levels to trade", Order=5, GroupName="Imbalances")]
+		[Display(Name="tick levels to sum for one imbalance", Order=5, GroupName="Imbalances")]
 		public int levelstotrade { get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="number of imbalances to classify a trade", Order=5, GroupName="Imbalances")]
+		public int imbalancestotrade { get; set; }
 		
 		
 		[NinjaScriptProperty]

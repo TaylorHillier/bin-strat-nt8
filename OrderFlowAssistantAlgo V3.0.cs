@@ -48,14 +48,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double MADif { get; set; }
 		public double TOD { get; set; }
 		public double StdDev { get; set; }
-
+		public double VROC { get; set; }
 		
 		public int WinCount { get; set; } = 0;
 		public int LossCount { get; set; } = 0;
 		public bool IsCompleted { get; set; } = false;
+
+		public double PF { get; set; }
 		
 		
-		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string direction,double volumeSpeed, double bolDif, double maDif,  double tod, double stdDev)
+		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string direction,double volumeSpeed, double bolDif, double maDif,  double tod, double stdDev, double vroc)
 		{
 		    ImbVol = imbVol;
 		    AdvDetection = advDetection;
@@ -67,8 +69,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			MADif = maDif;
 			TOD = tod;
 			StdDev = stdDev;
-			
-			
+			VROC = vroc;
+	
 		}
 		
 		public void UpdateWinRate()
@@ -366,20 +368,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			Delta = buysAtBar.Values.Sum() - sellsAtBar.Values.Sum();
 			
-//			if(R2 >= 0.6){
-//				isTrendMode = true;
-//				isRegressionMode= false;
-				
-//				} else if(R2 < -0.4){
-//					isRegressionMode = true;
-//					isTrendMode = false;
-					
-//				}
-//				else {
-//					isRegressionMode = false;
-//					isTrendMode = false;
-//				}
-			
 			double barLow = Low[0]; // Assuming [0] is the index of the current bar
 			double barHigh = High[0];
 			double barRange = barHigh - barLow;
@@ -456,23 +444,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 				                double advDetection = Math.Min(buyVolume, sellVolume);
 								double tradeRatio = 0;
 								
-								foreach(var kvp in aggregatedBuys){
-									Print(kvp.Key);
-									Print(kvp.Value);
-								}
-								
 								string direction = "";
 								
 									if(buyVolume > sellVolume)
 									{
 										 tradeRatio = sellVolume > 0 ? buyVolume/sellVolume : buyVolume;
 										 
-										direction = "Long";
+										direction = "Short";
 										
 									} else if(sellVolume > buyVolume) {
 										tradeRatio = buyVolume > 0 ? sellVolume/buyVolume : sellVolume;
 									
-										direction = "Short";
+										direction = "Long";
 										
 									}
 									
@@ -564,7 +547,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        var tradeParams = tradeParamsList[i];
 			        if (Time[0] > tradeParams.TradeWindowEndTime)
 			        {
-			            UpdateWinRateForTradeParams(tradeParams);
+			            UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
 			            completedTradeParams.Add(tradeParams);
 			            tradeParamsList.RemoveAt(i);
 			        }
@@ -625,8 +608,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 					
 		}
 		
-		int upBid;
-		int downAsk;
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 			
@@ -653,11 +634,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 		        double price = e.Price;
 		        double volume = e.Volume;
-				lowSpread = false;
-				
-				if(e.Ask - e.Bid == 0.25){
-					lowSpread = true;
-				}
 		      
 		        if (price > (e.Ask + e.Bid) / 2)
 		        {
@@ -811,7 +787,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 					PATIMachineLearningInputsV2().BollingerDiff[0],
 					PATIMachineLearningInputsV2().MovingAvgDiff[0],
 					PATIMachineLearningInputsV2().TimeOfDay[0],
-					PATIMachineLearningInputsV2().StdDevBB[0]
+					PATIMachineLearningInputsV2().StdDevBB[0],
+					VROC(2,1)[0]
 			    )
 			    {
 			        WindowId = currentWindowId
@@ -826,8 +803,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 	
 			private void UpdateSimTrades(double target, double stopLoss)
 			{
-				
-			    //Print("Updating simulated trades...");
 			    foreach (SimTrade trade in simTrades)
 			    {
 			        if (trade.WindowId != currentWindowId || trade.Status != null) continue;
@@ -837,25 +812,24 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        string positionType = trade.Direction;
 			        bool tradeUpdated = false;
 			
+			
 			        if (positionType == "Long")
 			        {
+
+			
 			            if (currentPrice >= entryPrice + (target * TickSize))
 			            {
 			                trade.Status = "Target Hit";
 			                trade.WinCount++;
-			                tradeUpdated = true;
+			   
 			                trade.IsCompleted = true;
 			            }
 			            else if (currentPrice <= entryPrice - (stopLoss * TickSize))
 			            {
 			                trade.Status = "Stop Loss Hit";
 			                trade.LossCount++;
-			                tradeUpdated = true;
+			               
 			                trade.IsCompleted = true;
-//							if(!incTrain)
-//								{
-//			                Print($"Trade stop loss hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
-//								}
 			            }
 			        }
 			        else if (positionType == "Short")
@@ -864,58 +838,43 @@ namespace NinjaTrader.NinjaScript.Strategies
 			            {
 			                trade.Status = "Target Hit";
 			                trade.WinCount++;
-			                tradeUpdated = true;
+			                
 			                trade.IsCompleted = true;
-//							if(!incTrain)
-//								{
-//			                Print($"Trade target hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
-//								}
 			            }
 			            else if (currentPrice >= entryPrice + (stopLoss * TickSize))
 			            {
 			                trade.Status = "Stop Loss Hit";
 			                trade.LossCount++;
-			                tradeUpdated = true;
+			                
 			                trade.IsCompleted = true;
-//							if(!incTrain)
-//								{
-//			                Print($"Trade stop loss hit. EntryPrice: {entryPrice}, CurrentPrice: {currentPrice}");
-//								}
 			            }
 			        }
 			
-			        if (tradeUpdated)
-			        {
-			            trade.TradeCount++;
-			            trade.UpdateWinRate();
-//						if(!incTrain)
-//								{
-//			            Print($"Trade updated. Direction: {trade.Direction}, Status: {trade.Status}, WinRate: {trade.WinRate}");
-//								}
-			        }
 			    }
-				
-				simTrades.RemoveAll(trade => trade.IsCompleted);
 			
-			   // Print("Simulated trades update complete.");
+			    simTrades.RemoveAll(trade => trade.IsCompleted);
 			}
+
 	
-			private void UpdateWinRateForTradeParams(TradeParameters tradeParams)
+			private void UpdateWinRateForTradeParams(TradeParameters tradeParams, double target, double stopLoss)
 			{
 			    int winCount = tradeParams.Trades.Count(trade => trade.Status == "Target Hit");
 			    int lossCount = tradeParams.Trades.Count(trade => trade.Status == "Stop Loss Hit");
+			    
 			    int totalTrades = winCount + lossCount;
-			
+			    
 			    double winRate = totalTrades > 0 ? (double)winCount / totalTrades : 0;
-				int tradeCount = totalTrades;
+				double profitFactor = lossCount > 0 ? (winCount * 5 * target) / (lossCount * 5 * stopLoss) : 10;
 			    foreach (var trade in tradeParams.Trades)
 			    {
 			        trade.WinRate = winRate;
-					trade.TradeCount = tradeCount;
+			        trade.TradeCount = totalTrades;
+					trade.PF = profitFactor;
 			    }
 			
-			   // Print($"Win Rate for trade type (ImbVol: {tradeParams.ImbVolThreshold}, AdvDetection: {tradeParams.AdvDetectionThreshold}): {winRate:P2}");
+			    // Print($"Win Rate for trade type (ImbVol: {tradeParams.ImbVolThreshold}, AdvDetection: {tradeParams.AdvDetectionThreshold}): {winRate:P2}");
 			}
+
 
 			
 			private void WriteTradesToCsv(List<TradeParameters> completedTradeParams)
@@ -943,7 +902,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        {
 			            if (new FileInfo(filePath).Length == 0)
 			            {
-			                writer.WriteLine("ImbalanceVolume,AdversaryDetection,Ratio,WinRate,VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB,TradeCount");
+			                writer.WriteLine("ImbalanceVolume,Ratio,AdversaryDetection,WinRate,VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB,VROC,ProfitFactor");
 			            }
 			
 			            foreach (var tradeParams in completedTradeParams)
@@ -971,8 +930,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 								double mad = Math.Round(firstCompletedTrade.MADif,2);
 								double tod = Math.Round(firstCompletedTrade.TOD,2);
 								double std = Math.Round(PATIMachineLearningInputsV2().StdDevBB[0],2);
+								double vroc = Math.Round(VROC(2,1)[0], 2);
 								int tc = firstCompletedTrade.TradeCount;
-							    writer.WriteLine($"{firstCompletedTrade.ImbVol},{firstCompletedTrade.AdvDetection},{r},{wr},{volVel},{tod},{bd},{mad},{std},{tc}");
+								double pf = firstCompletedTrade.PF;
+							    writer.WriteLine($"{firstCompletedTrade.ImbVol},{r},{firstCompletedTrade.AdvDetection},{wr},{volVel},{tod},{bd},{mad},{std},{vroc},{pf}");
 							}
 							
 							
@@ -995,7 +956,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			    using (StreamWriter writer = new StreamWriter(filePath, false)) // false to overwrite existing content
 			    {
 			        // Write headers
-			        writer.WriteLine("VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB");
+			        writer.WriteLine("VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB,VROC");
 			
 			        // Get the current delta values
 			        double currentDelta = deltaValues[0];
@@ -1005,10 +966,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 					double mad = Math.Round(PATIMachineLearningInputsV2().MovingAvgDiff[0],2);
 					double tod = Math.Round(PATIMachineLearningInputsV2().TimeOfDay[0],2);
 					double std = Math.Round(PATIMachineLearningInputsV2().StdDevBB[0],2);
-					
+					double vroc = Math.Round(VROC(2,1)[0],2);
 				
 			        // Write the current values to the CSV file
-			        writer.WriteLine($"{volVel},{tod},{bd},{mad},{std}");
+			        writer.WriteLine($"{volVel},{tod},{bd},{mad},{std},{vroc}");
 			    }
 			
 			
@@ -1040,7 +1001,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                    minVolume = int.Parse(values[0]);
 			                	ratio = double.Parse(values[1]);
 								detectionValue = int.Parse(values[2]);
-								R2 = double.Parse(values[3]);
+								
 								
 //								if (minVolume < 15)
 //								{

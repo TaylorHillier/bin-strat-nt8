@@ -463,26 +463,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				    }
 					
 			
-			if (!isAtmStrategyCreated )
-				return;
-		
 			
-				// Check for a pending entry order
-				if (orderId.Length > 0)
-				{
-					string[] status = GetAtmStrategyEntryOrderStatus(orderId);
-				
-					// If the status call can't find the order specified, the return array length will be zero otherwise it will hold elements
-					if (status.GetLength(0) > 0)
-					{
-					
-						// If the order state is terminal, reset the order id value
-						if (status[2] == "Filled" || status[2] == "Cancelled" || status[2] == "Rejected")
-							orderId = string.Empty;
-					}
-				} // If the strategy has terminated reset the strategy id
-				else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat) 
-					atmStrategyId = string.Empty;
 			
 		}
 		
@@ -533,7 +514,26 @@ namespace NinjaTrader.NinjaScript.Strategies
 		       
 		        UpdateTotalBuysAndSells(e.Price);
 		    }
+			if (!isAtmStrategyCreated )
+				return;
+		
 			
+				// Check for a pending entry order
+				if (orderId.Length > 0)
+				{
+					string[] status = GetAtmStrategyEntryOrderStatus(orderId);
+				
+					// If the status call can't find the order specified, the return array length will be zero otherwise it will hold elements
+					if (status.GetLength(0) > 0)
+					{
+					
+						// If the order state is terminal, reset the order id value
+						if (status[2] == "Filled" || status[2] == "Cancelled" || status[2] == "Rejected")
+							orderId = string.Empty;
+					}
+				} // If the strategy has terminated reset the strategy id
+				else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat) 
+					atmStrategyId = string.Empty;
 	
 			buysforratio = buysAtBar.Values.Sum();
 			sellsforratio = sellsAtBar.Values.Sum();
@@ -1153,8 +1153,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 			if(SelectedCalculationMethod == CalculationMethod.NQ)
 			{
-		    CheckAndEnterLong(price);  // Check upwards
-		    CheckAndEnterShort(price); // Check downwards
+		    // For Long trades
+			CheckAndEnterTrade(price);
+
 			}
 			
 			if(SelectedCalculationMethod == CalculationMethod.ES)
@@ -1165,256 +1166,140 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 		}
 		
-		private void CheckAndEnterLong(double price)
+		private void CheckAndEnterTrade(double price)
 		{
 		    double cumulativeBuys = 0;
 		    double cumulativeSells = 0;
 		    int validPriceLevels = 0;
+		    int validImb = 0;
 		
-		    // Define the range of levels to check
-//		    int levelsToCheck = levelstotrade > 1 ? levelstotrade / 2 : 1;
-//		    double startLevel = -levelsToCheck;
-//		    double endLevel = levelsToCheck;
-			
-			 double startLevel = -levelstotrade;
-		    double endLevel = 0;
-			
-
-			int validImb = 0;
-			
-			int numImb = imbalancestotrade;
-			if(aroundPrice){
-			    // Access and sum the values within the range
-				for(int i = 0; i < numImb; i++){
-					cumulativeBuys = 0;
-					cumulativeSells = 0;
-					validPriceLevels = 0;
-				    for (double j = startLevel; j < endLevel; j++)
-				    {
-				        double priceToCheck = price + j * TickSize;
-				        
-				        // Check if the price level exists in both dictionaries
-				        if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
-				        {
-				            cumulativeBuys += buys;
-				            cumulativeSells += sells;
-						
-				            validPriceLevels++;
-				        }
-				    }
-					
+		    // Define the initial range, centered around 0 index
+		    double startLevel = -levelstotrade / 2;
+		    double endLevel = levelstotrade / 2;
 		
+		    int numImb = imbalancestotrade;
 		
-					double buyRatio = cumulativeBuys / cumulativeSells;
-				
-					
-					if(  cumulativeBuys - cumulativeSells >= minVolume && cumulativeSells >= detectionValue && buyRatio >= ratio  && validPriceLevels == levelstotrade){
-						validImb++;
-					}
-					
-					
-					startLevel = startLevel - (numImb * levelstotrade * TickSize);
-					endLevel = endLevel - (numImb * levelstotrade * TickSize);
-				}
-			}
-			if(aggregate){
-				
-				for(int i = 0; i < numImb; i++){
-				
-				    for (double j = startLevel; j < endLevel; j++)
-				    {
-				        double priceToCheck = price - j;
-				        
-				        // Check if the price level exists in both dictionaries
-				        if (aggregatedBuys.TryGetValue(priceToCheck, out double buys) && aggregatedSells.TryGetValue(priceToCheck, out double sells))
-				        {
-						
-			            	if( buys-sells >= minVolume && sells >= detectionValue && buys/sells > ratio){
-								validImb++;
-							}
-				        }
-				    }
-					
-				}
-			}
+		    Print($"Starting trade check: Price: {price}");
 		
-			
-		    if (isLongMode && orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
+		    if (aroundPrice)
 		    {
-		        if (State == State.Realtime)
+		        // Make sure the loop will run even when numImb is 1
+		        do
 		        {
-		            if (isRegressionMode && validImb == numImb || isRegressionMode && cumulativeSells == 0 && validPriceLevels == levelstotrade)
+		            cumulativeBuys = 0;
+		            cumulativeSells = 0;
+		            validPriceLevels = 0;
+		
+		            // Accumulate over 4 levels at a time
+		            for (double j = startLevel; j < endLevel; j++)
 		            {
-		                tradeTaken = true;
+		                double priceToCheck = price + j * TickSize;
 		
-		                #region ATMStrat
-		
-		                isAtmStrategyCreated = false;  // reset atm strategy created check to false
-		                orderId = GetAtmStrategyUniqueId();
-		                atmStrategyId = GetAtmStrategyUniqueId();
-		                AtmStrategyCreate(OrderAction.Sell, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) =>
+		                if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
 		                {
-		                    // Check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
+		                    cumulativeBuys += buys;
+		                    cumulativeSells += sells;
+		                    validPriceLevels++;
+		                }
+		            }
+		
+		            // Calculate the ratio (adjust for sell imbalance)
+		            double rawRatio = cumulativeBuys / cumulativeSells;
+		            double ratio = rawRatio < 1 ? 1 / rawRatio : rawRatio;
+					
+					Print(Math.Abs(cumulativeBuys - cumulativeSells) >= minVolume);
+					Print(Math.Min(cumulativeBuys, cumulativeSells) >= detectionValue);
+					Print(ratio >= this.ratio);
+					Print(validPriceLevels == 4);
+					Print(validPriceLevels);
+					Print(tradeTaken);
+					Print(orderId.Length);
+					Print(atmStrategyId.Length);
+		            // Check if conditions meet the thresholds
+		            if ((Math.Abs(cumulativeBuys - cumulativeSells) >= minVolume) &&
+		                Math.Min(cumulativeBuys, cumulativeSells) >= detectionValue &&
+		                ratio >= this.ratio && validPriceLevels == 4)  // Only include 4 levels
+		            {
+		                validImb++;
+		                Print($"Valid imbalance incremented: validImb = {validImb}, Buys: {cumulativeBuys}, Sells: {cumulativeSells}, Ratio: {ratio}");
+		            }
+		            else
+		            {
+		                Print($"Failed imbalance check. Buys: {cumulativeBuys}, Sells: {cumulativeSells}, Ratio: {ratio}");
+		            }
+		Print(" " );
+		            // Shift the range by one tick (moving both start and end)
+		            startLevel += 1;
+		            endLevel += 1;
+		
+		            // Decrement numImb if it was more than 1
+		            numImb--;
+		        }
+		        while (numImb > 0);
+		    }
+		
+		    // Execute trade logic
+		    if (orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
+		    {
+		        if (State == State.Realtime && validImb == imbalancestotrade)
+		        {
+					tradeTaken = true;
+		            OrderAction action = OrderAction.Sell; // Default action is sell
+		
+		            if (isShortMode)
+		            {
+		                // In short mode, bid imbalance trades:
+		                if (isRegressionMode)
+		                {
+		                    action = OrderAction.Buy;  // Buy in regression mode
+		                }
+		                else if (isTrendMode)
+		                {
+		                    action = OrderAction.Sell; // Sell in trend mode
+		                }
+		            }
+		            else if (isLongMode)
+		            {
+		                // In long mode, ask imbalance trades:
+		                if (isRegressionMode)
+		                {
+		                    action = OrderAction.Sell;  // Sell in regression mode
+		                }
+		                else if (isTrendMode)
+		                {
+		                    action = OrderAction.Buy;   // Buy in trend mode
+		                }
+		            }
+		
+					 #region ATMStrat
+						
+						                isAtmStrategyCreated = false;  // reset atm strategy created check to false
+						                orderId = GetAtmStrategyUniqueId();
+						                atmStrategyId = GetAtmStrategyUniqueId();
+						
+		            // Execute the ATM strategy
+		            AtmStrategyCreate(
+		                action,
+		                OrderType.Market, 0, 0, TimeInForce.Gtc,
+		                orderId, ATMStrategy, atmStrategyId,
+		                (atmCallbackErrorCode, atmCallBackId) =>
+		                {
 		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
 		                    {
 		                        isAtmStrategyCreated = true;
 		                    }
 		                });
-		
-		                #endregion
-						resetButtons();
-						Print("Regressive Long Trade");
-		            }
-		            else if (isTrendMode && validImb == numImb || isTrendMode && cumulativeSells == 0 && validPriceLevels == levelstotrade)
-		            {
-		                tradeTaken = true;
-		
-		                #region ATMStrat
-		
-		                isAtmStrategyCreated = false;  // reset atm strategy created check to false
-		                atmStrategyId = GetAtmStrategyUniqueId();
-		                orderId = GetAtmStrategyUniqueId();
-		                AtmStrategyCreate(OrderAction.Buy, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) =>
-		                {
-		                    // Check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
-		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-		                    {
-		                        isAtmStrategyCreated = true;
-		                    }
-		                });
-		
-		                #endregion
-						resetButtons();
-						Print("Trend Long Trade");
-		            }
+					#endregion
+		            resetButtons();
+		            Print(action == OrderAction.Buy ? "Long Trade Executed" : "Short Trade Executed");
 		        }
 		    }
+		    Print($"Final validImb: {validImb}, numImb needed: {imbalancestotrade}");
 		}
 
-		private void CheckAndEnterShort(double price)
-		{
-		    double cumulativeBuys = 0;
-		    double cumulativeSells = 0;
-		    int validPriceLevels = 0;
 		
-//		    // Define the range of levels to check
-//		    int levelsToCheck = levelstotrade > 1 ? levelstotrade / 2 : 1;
-//		    double startLevel = -levelsToCheck;
-//		    double endLevel = levelsToCheck;
 		
-				int validImb = 0;
-			
-		 double startLevel = 0;
-		    double endLevel = levelstotrade;
-			
-			int numImb = imbalancestotrade;
-			if(aroundPrice){
-				for(int i = 0; i < numImb; i++){
-					
-					cumulativeBuys = 0;
-					cumulativeSells = 0;
-					validPriceLevels = 0;
-				    for (double j = startLevel; j < endLevel; j++)
-				    {
-				        double priceToCheck = price + j * TickSize;
-				        
-				        // Check if the price level exists in both dictionaries
-				        if (buysAtBar.TryGetValue(priceToCheck, out double buys) && sellsAtBar.TryGetValue(priceToCheck, out double sells))
-				        {
-				            cumulativeBuys += buys;
-				            cumulativeSells += sells;
-						
-				            validPriceLevels++;
-							
-				        }
-				    }
-					
-					double sellRatio = cumulativeSells / cumulativeBuys;
-					
-					if( cumulativeSells - cumulativeBuys >= minVolume && cumulativeBuys >= detectionValue && sellRatio >= ratio && validPriceLevels == levelstotrade){
-						validImb++;
-					}
-					
-					startLevel = startLevel + (numImb * levelstotrade * TickSize);
-					endLevel = endLevel + (numImb * levelstotrade * TickSize);
-					
-				}
-			}
-			if(aggregate){
-				for(int i = 0; i < numImb; i++){
 				
-				    for (double j = startLevel; j < endLevel; j++)
-				    {
-				        double priceToCheck = price + j;
-				        
-				        // Check if the price level exists in both dictionaries
-				        if (aggregatedBuys.TryGetValue(priceToCheck, out double buys) && aggregatedSells.TryGetValue(priceToCheck, out double sells))
-				        {
-						
-			            	if(sells - buys >= minVolume && buys >= detectionValue && buys/sells >= ratio){
-								validImb++;
-							}
-							
-			
-				        }
-				    }
-					
-				}
-			}
-		
-		
-		    if (isShortMode && orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
-		    {
-		        if (State == State.Realtime)
-		        {
-		            if (isRegressionMode && validImb == numImb || isRegressionMode && cumulativeBuys == 0 && validPriceLevels == levelstotrade)
-		            {
-		                tradeTaken = true;
-		
-		                #region ATMStrat
-		
-		                isAtmStrategyCreated = false;  // reset atm strategy created check to false
-		                atmStrategyId = GetAtmStrategyUniqueId();
-		                orderId = GetAtmStrategyUniqueId();
-		                AtmStrategyCreate(OrderAction.Buy, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) =>
-		                {
-		                    // Check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
-		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-		                    {
-		                        isAtmStrategyCreated = true;
-		                    }
-		                });
-		
-		                #endregion
-						resetButtons();
-						Print("Regressive Short Trade");
-		            }
-		            else if (isTrendMode && validImb == numImb ||isTrendMode && cumulativeBuys == 0 && validPriceLevels == levelstotrade)
-		            {
-		                tradeTaken = true;
-		
-		                #region ATMStrat
-		
-		                isAtmStrategyCreated = false;  // reset atm strategy created check to false
-		                atmStrategyId = GetAtmStrategyUniqueId();
-		                orderId = GetAtmStrategyUniqueId();
-		                AtmStrategyCreate(OrderAction.Sell, OrderType.Market, 0, 0, TimeInForce.Gtc, orderId, ATMStrategy, atmStrategyId, (atmCallbackErrorCode, atmCallBackId) =>
-		                {
-		                    // Check that the atm strategy create did not result in error, and that the requested atm strategy matches the id in callback
-		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-		                    {
-		                        isAtmStrategyCreated = true;
-		                    }
-		                });
-		
-		                #endregion
-						resetButtons();
-						Print("Trend Short Trade");
-		            }
-		        }
-		    }
-		}
-		
 		private void CheckAndEnterLongES(double price)
 		{
 		    int validPriceLevels = 0;

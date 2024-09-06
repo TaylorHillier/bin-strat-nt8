@@ -514,6 +514,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		       
 		        UpdateTotalBuysAndSells(e.Price);
 		    }
+			
 			if (!isAtmStrategyCreated )
 				return;
 		
@@ -1178,9 +1179,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    double endLevel = levelstotrade / 2;
 		
 		    int numImb = imbalancestotrade;
-		
-		    Print($"Starting trade check: Price: {price}");
-		
+
 		    if (aroundPrice)
 		    {
 		        // Make sure the loop will run even when numImb is 1
@@ -1207,30 +1206,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 		            double rawRatio = cumulativeBuys / cumulativeSells;
 		            double ratio = rawRatio < 1 ? 1 / rawRatio : rawRatio;
 					
-					Print(Math.Abs(cumulativeBuys - cumulativeSells) >= minVolume);
-					Print(Math.Min(cumulativeBuys, cumulativeSells) >= detectionValue);
-					Print(ratio >= this.ratio);
-					Print(validPriceLevels == 4);
-					Print(validPriceLevels);
-					Print(tradeTaken);
-					Print(orderId.Length);
-					Print(atmStrategyId.Length);
 		            // Check if conditions meet the thresholds
 		            if ((Math.Abs(cumulativeBuys - cumulativeSells) >= minVolume) &&
 		                Math.Min(cumulativeBuys, cumulativeSells) >= detectionValue &&
-		                ratio >= this.ratio && validPriceLevels == 4)  // Only include 4 levels
+		                ratio >= this.ratio && validPriceLevels == 4 || (Math.Min(cumulativeBuys, cumulativeSells) == 0))  // Only include 4 levels
 		            {
 		                validImb++;
-		                Print($"Valid imbalance incremented: validImb = {validImb}, Buys: {cumulativeBuys}, Sells: {cumulativeSells}, Ratio: {ratio}");
+		               
 		            }
-		            else
-		            {
-		                Print($"Failed imbalance check. Buys: {cumulativeBuys}, Sells: {cumulativeSells}, Ratio: {ratio}");
-		            }
-		Print(" " );
-		            // Shift the range by one tick (moving both start and end)
-		            startLevel += 1;
-		            endLevel += 1;
 		
 		            // Decrement numImb if it was more than 1
 		            numImb--;
@@ -1238,63 +1221,74 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        while (numImb > 0);
 		    }
 		
+		    bool isBuyImbalance = cumulativeBuys > cumulativeSells;
+            bool isSellImbalance = cumulativeSells > cumulativeBuys;
 		    // Execute trade logic
-		    if (orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken)
-		    {
-		        if (State == State.Realtime && validImb == imbalancestotrade)
-		        {
-					tradeTaken = true;
-		            OrderAction action = OrderAction.Sell; // Default action is sell
-		
-		            if (isShortMode)
-		            {
-		                // In short mode, bid imbalance trades:
-		                if (isRegressionMode)
-		                {
-		                    action = OrderAction.Buy;  // Buy in regression mode
-		                }
-		                else if (isTrendMode)
-		                {
-		                    action = OrderAction.Sell; // Sell in trend mode
-		                }
-		            }
-		            else if (isLongMode)
-		            {
-		                // In long mode, ask imbalance trades:
-		                if (isRegressionMode)
-		                {
-		                    action = OrderAction.Sell;  // Sell in regression mode
-		                }
-		                else if (isTrendMode)
-		                {
-		                    action = OrderAction.Buy;   // Buy in trend mode
-		                }
-		            }
-		
-					 #region ATMStrat
-						
-						                isAtmStrategyCreated = false;  // reset atm strategy created check to false
-						                orderId = GetAtmStrategyUniqueId();
-						                atmStrategyId = GetAtmStrategyUniqueId();
-						
-		            // Execute the ATM strategy
-		            AtmStrategyCreate(
-		                action,
-		                OrderType.Market, 0, 0, TimeInForce.Gtc,
-		                orderId, ATMStrategy, atmStrategyId,
-		                (atmCallbackErrorCode, atmCallBackId) =>
-		                {
-		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-		                    {
-		                        isAtmStrategyCreated = true;
-		                    }
-		                });
-					#endregion
-		            resetButtons();
-		            Print(action == OrderAction.Buy ? "Long Trade Executed" : "Short Trade Executed");
-		        }
-		    }
-		    Print($"Final validImb: {validImb}, numImb needed: {imbalancestotrade}");
+		  if (orderId.Length == 0 && atmStrategyId.Length == 0 && !tradeTaken && (isLongMode || isShortMode))
+			{
+			    if (State == State.Realtime && validImb == imbalancestotrade)
+			    {
+			        tradeTaken = true;
+				        OrderAction action = OrderAction.Sell; // Default action is sell
+				
+				
+				       // Handle imbalances based on mode and whether we are in long/short mode
+				            if (isShortMode)
+				            {
+				                // For short mode (sell imbalances):
+				                if (isSellImbalance)
+				                {
+				                    // If it's a sell imbalance, check mode:
+				                    action = isTrendMode ? OrderAction.Sell : OrderAction.Buy;
+				                }
+				                else
+				                {
+				                    // If it's a buy imbalance, reverse the logic:
+				                    action = isTrendMode ? OrderAction.Buy : OrderAction.Sell;
+				                }
+				            }
+				            else if (isLongMode)
+				            {
+				                // For long mode (buy imbalances):
+				                if (isBuyImbalance)
+				                {
+				                    // If it's a buy imbalance, check mode:
+				                    action = isTrendMode ? OrderAction.Buy : OrderAction.Sell;
+				                }
+				                else
+				                {
+				                    // If it's a sell imbalance, reverse the logic:
+				                    action = isTrendMode ? OrderAction.Sell : OrderAction.Buy;
+				                }
+				            }
+				        
+			
+			        #region ATMStrat
+			        isAtmStrategyCreated = false;  // reset atm strategy created check to false
+			        orderId = GetAtmStrategyUniqueId();
+			        atmStrategyId = GetAtmStrategyUniqueId();
+			
+			        // Execute the ATM strategy
+			        AtmStrategyCreate(
+			            action,
+			            OrderType.Market, 0, 0, TimeInForce.Gtc,
+			            orderId, ATMStrategy, atmStrategyId,
+			            (atmCallbackErrorCode, atmCallBackId) =>
+			            {
+			                if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+			                {
+			                    isAtmStrategyCreated = true;
+			                }
+			            });
+			        #endregion
+			
+			        resetButtons();
+			        Print(action == OrderAction.Buy
+			            ? $"Long Trade Executed: {cumulativeBuys} : {cumulativeSells}"
+			            : $"Short Trade Executed: {cumulativeBuys} : {cumulativeSells}");
+			    }
+			}
+					   
 		}
 
 		

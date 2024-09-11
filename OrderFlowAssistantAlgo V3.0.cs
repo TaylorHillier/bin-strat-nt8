@@ -11,6 +11,8 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Xml.Serialization;
+using System.Net.Http;
+using System.Web.Script.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
@@ -29,6 +31,30 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
 	#region Classes
 	
+	public class HttpClientWrapper
+	{
+		private static readonly HttpClient client = new HttpClient();
+		private const string BaseUrl = "http://192.168.1.116:5000"; // Your server address
+		private static readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+
+		public static Dictionary<string, object> Get(string endpoint)
+		{
+			HttpResponseMessage response = client.GetAsync($"{BaseUrl}/{endpoint}").Result;
+			response.EnsureSuccessStatusCode();
+			string responseBody = response.Content.ReadAsStringAsync().Result;
+			return serializer.Deserialize<Dictionary<string, object>>(responseBody);
+		}
+
+		public static Dictionary<string, object> Post(string endpoint, object data)
+		{
+			string json = serializer.Serialize(data);
+			HttpContent content = new StringContent(json, Encoding.UTF8, "application/json");
+			HttpResponseMessage response = client.PostAsync($"{BaseUrl}/{endpoint}", content).Result;
+			response.EnsureSuccessStatusCode();
+			string responseBody = response.Content.ReadAsStringAsync().Result;
+			return serializer.Deserialize<Dictionary<string, object>>(responseBody);
+		}
+	}
 		
 	public class SimTrade
 	{
@@ -366,9 +392,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		protected override void OnBarUpdate()
 		{
-			int Period = 3;
-			var entropy = Entropy(Period, 1, 1);
-			
+
 				if(StrategyStartTime == null){
 					StrategyStartTime = Time[0];
 				}
@@ -377,7 +401,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 				if(State==State.Realtime)
 				{
-				 WriteCurrentPredictiveValuesToCsv();
+				  WriteCurrentPredictiveValuesToServer();
+				   ReadOptimizedParamsFromServer();
 				}
 				
 				UpdateHighsAndLows();
@@ -397,25 +422,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 	        }
 			
-			 var completedTradeParams = new List<TradeParameters>();
-
-				 for (int i = tradeParamsList.Count - 1; i >= 0; i--)
-				  {
-				      var tradeParams = tradeParamsList[i];
-				
-				       if (Time[0] > tradeParams.TradeWindowEndTime)
-				       {
-								
-				          UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
-				          completedTradeParams.Add(tradeParams);
-				          tradeParamsList.RemoveAt(i);
-				        }
-				    }
-				
-				    if (completedTradeParams.Any())
-				    {
-				        WriteTradesToCsv(completedTradeParams);
-				    }
+			 ProcessTradeParams();
 			// Update simulated trades and check for target or stop loss
 		}
 		
@@ -435,6 +442,26 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    currentSells.Clear();
 		   
 		}
+		
+		private void ProcessTradeParams()
+    {
+        var completedTradeParams = new List<TradeParameters>();
+
+        foreach (var tradeParams in tradeParamsList.ToList())
+        {
+            if (Time[0] > tradeParams.TradeWindowEndTime)
+            {
+                UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
+                completedTradeParams.Add(tradeParams);
+                tradeParamsList.Remove(tradeParams);
+            }
+        }
+
+        if (completedTradeParams.Any())
+        {
+            WriteTradesToCsv(completedTradeParams);
+        }
+    }
 		
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
@@ -508,10 +535,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 					ResetBuysAndSells();
 				}
 				
-				if (MLOn && Optimise && State == State.Realtime)
-				{
-					ReadOptimizedParamsFromCSV();
-				}
+				// if (MLOn && Optimise && State == State.Realtime)
+				// {
+					
+				// }
 				
 				if (e.MarketDataType == MarketDataType.Last || e.MarketDataType == MarketDataType.Bid || e.MarketDataType == MarketDataType.Ask)
 				{
@@ -782,10 +809,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        direction == "Short" ? price : price + levelstotrade * TickSize,
 			        direction,
 			        PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1],
-			        PATIMachineLearningInputsV2().BollingerDiff[0],
-			        PATIMachineLearningInputsV2().MovingAvgDiff[0],
-			        PATIMachineLearningInputsV2().TimeOfDay[0],
-			        PATIMachineLearningInputsV2().StdDevBB[0]
+			        PATIMachineLearningInputsV2().BollingerDiff[1],
+			        PATIMachineLearningInputsV2().MovingAvgDiff[1],
+			        PATIMachineLearningInputsV2().TimeOfDay[1],
+			        PATIMachineLearningInputsV2().StdDevBB[1]
 			    );
 			
 			    tradeParams.Trades.Add(newTrade);
@@ -885,14 +912,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        {
 			            // Check if the header exists
 			            string firstLine = File.ReadLines(filePath).FirstOrDefault();
-			            headerExists = firstLine != null && firstLine.StartsWith("Expectancy,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB");
+			            headerExists = firstLine != null && firstLine.StartsWith("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB");
 			        }
 			
 			        using (StreamWriter writer = new StreamWriter(filePath, append: true))
 			        {
 			            if (!headerExists)
 			            {
-			                writer.WriteLine("Expectancy,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB");
+			                writer.WriteLine("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB");
 			            }
 			
 			            StringBuilder sb = new StringBuilder();
@@ -902,7 +929,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                if (lastCompletedTrade != null)
 			                {
 			                    sb.AppendFormat("{0},{1},{2},{3},{4},{5},{6},{7},{8}\n",
-			                        Math.Round(lastCompletedTrade.TradeExpectancy, 2),
+			                        Math.Round(lastCompletedTrade.WinRate, 2),
 			                        lastCompletedTrade.ImbVol,
 			                        Math.Round(lastCompletedTrade.Ratio, 2),
 			                        lastCompletedTrade.AdvDetection,
@@ -924,71 +951,58 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 
 	
-			private void WriteCurrentPredictiveValuesToCsv()
+			private void WriteCurrentPredictiveValuesToServer()
 			{
-			    string filePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\current_predictive_values.csv";
-			
-			    // Open or create the CSV file and overwrite any existing content
-			    using (StreamWriter writer = new StreamWriter(filePath, false)) // false to overwrite existing content
-			    {
-			        // Write headers
-			        writer.WriteLine("VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB");
-
-					double volVel = Math.Round(PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1],2);
-					double bd = Math.Round(PATIMachineLearningInputsV2().BollingerDiff[0],2);
-					double mad = Math.Round(PATIMachineLearningInputsV2().MovingAvgDiff[0],2);
-					double tod = PATIMachineLearningInputsV2().TimeOfDay[0];
-					double std = Math.Round(PATIMachineLearningInputsV2().StdDevBB[0],2);
-			        // Write the current values to the CSV file
-			        writer.WriteLine($"{volVel},{tod},{bd},{mad},{std}");
-			    }
-			
-			
-			    //Print("Current predictive values written to CSV.");
-			}
-				private int prevvol = 0;
-				private double prevratio = 0;
-				private int prevdet = 0;
-				private const string FilePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\optimized_params.csv";
-
-				private void ReadOptimizedParamsFromCSV()
+				var predictiveValues = new
 				{
-					if (!File.Exists(FilePath))
+					VolumeSpeed = Math.Round(PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1], 2),
+					TimeOfDay = PATIMachineLearningInputsV2().TimeOfDay[1],
+					BolDif = Math.Round(PATIMachineLearningInputsV2().BollingerDiff[1], 2),
+					MADif = Math.Round(PATIMachineLearningInputsV2().MovingAvgDiff[1], 2),
+					StdBB = Math.Round(PATIMachineLearningInputsV2().StdDevBB[1], 2)
+				};
+
+				try
+				{
+					HttpClientWrapper.Post("current_predictive_values", predictiveValues);
+				}
+				catch (Exception ex)
+				{
+					Print($"Error updating current predictive values: {ex.Message}");
+				}
+			}
+
+			double prevratio;
+			int prevvol;
+			int prevdet;
+			private void ReadOptimizedParamsFromServer()
+			{
+				try
+				{
+					var optimizedParams = HttpClientWrapper.Get("optimized_params");
+					
+					 int newMinVolume = Convert.ToInt32(optimizedParams["ImbVol"]);
+						double newRatio = Convert.ToDouble(optimizedParams["ImbRatio"]);
+						int newDetectionValue = Convert.ToInt32(optimizedParams["AdversaryDetection"]);
+
+					if (newMinVolume != prevvol || newRatio != prevratio || newDetectionValue != prevdet)
 					{
-						Print("Optimized parameters CSV file not found.");
-						return;
-					}
+						minVolume = newMinVolume;
+						ratio = newRatio;
+						detectionValue = newDetectionValue;
 
-					try
-					{
-						string[] lines = File.ReadAllLines(FilePath);
-						if (lines.Length < 2) return;
+						Print($"MinVol: {minVolume}, Ratio: {ratio}, AdvDet: {detectionValue}");
 
-						string[] values = lines[1].Split(',');
-						if (values.Length < 3) return;
-
-						int newMinVolume = int.Parse(values[0]);
-						double newRatio = double.Parse(values[1]);
-						int newDetectionValue = int.Parse(values[2]);
-
-						if (newMinVolume != prevvol || newRatio != prevratio || newDetectionValue != prevdet)
-						{
-							minVolume = newMinVolume;
-							ratio = newRatio;
-							detectionValue = newDetectionValue;
-
-							Print($"MinVol: {minVolume}, Ratio: {ratio}, AdvDet: {detectionValue}");
-
-							prevvol = newMinVolume;
-							prevratio = newRatio;
-							prevdet = newDetectionValue;
-						}
-					}
-					catch (Exception ex)
-					{
-						Print("Error reading optimized parameters from CSV: " + ex.Message);
+						prevvol = newMinVolume;
+						prevratio = newRatio;
+						prevdet = newDetectionValue;
 					}
 				}
+				catch (Exception ex)
+				{
+					Print("Error reading optimized parameters from server: " + ex.Message);
+				}
+			}
 
 		#endregion
 		
@@ -1118,31 +1132,43 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    double cumulativeBuys, double cumulativeSells, double cumulativeBuysPB, double cumulativeSellsPB)
 		{
 		    bool isBuyImbalance;
-		    if (normalImbalanceDetected)
-		    {
-		        isBuyImbalance = cumulativeBuys > cumulativeSells;
-		    }
-		    else if (pullbackImbalanceDetected)
-		    {
-		        isBuyImbalance = cumulativeBuysPB > cumulativeSellsPB;
-		    }
-		    else
-		    {
-		        return OrderAction.Sell; // Default action
-		    }
-
-		    if (isRegressionMode)
-		    {
-		        return isBuyImbalance ? OrderAction.Sell : OrderAction.Buy;
-		    }
-		    else if (isTrendMode)
-		    {
-		        return isBuyImbalance ? OrderAction.Buy : OrderAction.Sell;
-		    }
-		    else
-		    {
-		        return OrderAction.Sell; // Default action if neither mode is active
-		    }
+			if (normalImbalanceDetected)
+			{
+			    isBuyImbalance = cumulativeBuys > cumulativeSells;
+			}
+			else if (pullbackImbalanceDetected)
+			{
+			    isBuyImbalance = cumulativeBuysPB > cumulativeSellsPB;
+			}
+			else
+			{
+			    return OrderAction.Sell; // Default action
+			}
+			
+			if (isRegressionMode)
+			{
+			    if (isLongMode)
+			    {
+			        return isBuyImbalance ? OrderAction.Sell : OrderAction.Buy;
+			    }
+			    else if (isShortMode)
+			    {
+			        return isBuyImbalance ? OrderAction.Buy : OrderAction.Sell;
+			    }
+			}
+			else if (isTrendMode)
+			{
+			    if (isLongMode)
+			    {
+			        return isBuyImbalance ? OrderAction.Buy : OrderAction.Sell;
+			    }
+			    else if (isShortMode)
+			    {
+			        return isBuyImbalance ? OrderAction.Sell : OrderAction.Buy;
+			    }
+			}
+			
+			return OrderAction.Sell; // Default action if neither mode is active or if not in long/short mode
 		}
 
 		private void ExecuteATMStrategy(OrderAction action)

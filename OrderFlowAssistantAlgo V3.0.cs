@@ -135,21 +135,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 	}
 
    public struct VolumeProfileLevel
-{
-    public double BuyVolume;
-    public double SellVolume;
-    public double Delta => BuyVolume - SellVolume;
-
-    public void AddBuyVolume(double volume)
-    {
-        BuyVolume += Math.Abs(volume);
-    }
-
-    public void AddSellVolume(double volume)
-    {
-        SellVolume += Math.Abs(volume);
-    }
-}
+	{
+	    public double BuyVolume;
+	    public double SellVolume;
+	    public double Delta => BuyVolume - SellVolume;
+	
+	    public void AddBuyVolume(double volume)
+	    {
+	        BuyVolume += Math.Abs(volume);
+	    }
+	
+	    public void AddSellVolume(double volume)
+	    {
+	        SellVolume += Math.Abs(volume);
+	    }
+	}
 
    public struct VolumeProfileAnalysis
     {
@@ -223,6 +223,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		  private Dictionary<double, VolumeProfileLevel> accumulatedVolumeProfile;
 	    private Queue<Dictionary<double, VolumeProfileLevel>> historicalProfiles;
+
+		private Dictionary<double, VolumeProfileLevel> currentBarVolumeProfile;
+
 	    private const int MaxHistoricalBars = 10; // Adjust this value as needed
 		
 		private List<SimTrade> simTrades = new List<SimTrade>();
@@ -447,7 +450,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				UpdateHighsAndLows();
 		        activeBar = CurrentBar;
-					
+				 currentBarVolumeProfile = new Dictionary<double, VolumeProfileLevel>();
+
 				tradeTaken =false;
 				highOfBar = 0;
 				lowOfBar = 99999999;
@@ -471,31 +475,48 @@ namespace NinjaTrader.NinjaScript.Strategies
 			// Update simulated trades and check for target or stop loss
 			ProcessTradeParams();
 
-			  if (CurrentBar < 1) return;
+			if (CurrentBar < 1) return;
 
-	        // Create a snapshot of the current bar's volume profile
-	        Dictionary<double, VolumeProfileLevel> barProfile = new Dictionary<double, VolumeProfileLevel>(accumulatedVolumeProfile);
+			// Enqueue the current bar's profile
+			historicalProfiles.Enqueue(currentBarVolumeProfile);
+
+			// Update accumulatedVolumeProfile with currentBarVolumeProfile
+			foreach (var kvp in currentBarVolumeProfile)
+			{
+				if (accumulatedVolumeProfile.TryGetValue(kvp.Key, out VolumeProfileLevel accLevel))
+				{
+					accLevel.BuyVolume += kvp.Value.BuyVolume;
+					accLevel.SellVolume += kvp.Value.SellVolume;
+					accumulatedVolumeProfile[kvp.Key] = accLevel;
+				}
+				else
+				{
+					accumulatedVolumeProfile[kvp.Key] = new VolumeProfileLevel
+					{
+						BuyVolume = kvp.Value.BuyVolume,
+						SellVolume = kvp.Value.SellVolume
+					};
+				}
+			}
+
+			if (historicalProfiles.Count > MaxHistoricalBars)
+			{
+				var oldestProfile = historicalProfiles.Dequeue();
+				RemoveOldestProfileData(oldestProfile);
+			}
 	
-	        historicalProfiles.Enqueue(barProfile);
-	
-	        if (historicalProfiles.Count > MaxHistoricalBars)
-	        {
-	            var oldestProfile = historicalProfiles.Dequeue();
-	            RemoveOldestProfileData(oldestProfile);
-	        }
-	
-	        Print($"Updated Volume Profile for Bar {CurrentBar}. Accumulated Profile Size: {accumulatedVolumeProfile.Count}");
+	        //Print($"Updated Volume Profile for Bar {CurrentBar}. Accumulated Profile Size: {accumulatedVolumeProfile.Count}");
 	
 	        if (CurrentBar >= MaxHistoricalBars)
 	        {
 	            VolumeProfileAnalysis vpAnalysis = AnalyzeVolumeProfile();
-	            if (vpAnalysis.IsValid)
-	            {
-	                Print($"Bar {CurrentBar}: Total Delta: {vpAnalysis.TotalDelta}, Max Volume: {vpAnalysis.MaxVolume}, Price with Max Volume: {vpAnalysis.PriceWithMaxVolume}");
-					                PrintVolumeDelta();
+//	            if (vpAnalysis.IsValid)
+//	            {
+//	                Print($"Bar {CurrentBar}: Total Delta: {vpAnalysis.TotalDelta}, Max Volume: {vpAnalysis.MaxVolume}, Price with Max Volume: {vpAnalysis.PriceWithMaxVolume}");
+//					PrintVolumeDelta();
 
-	            }
-        }
+//		        }
+	        }
 		}
 		
 		double lowOfBar = 999999999;
@@ -512,25 +533,26 @@ namespace NinjaTrader.NinjaScript.Strategies
 		}
 		
 		private void ProcessTradeParams()
-    {
-        var completedTradeParams = new List<TradeParameters>();
-
-        foreach (var tradeParams in tradeParamsList.ToList())
-        {
-            if (Time[0] > tradeParams.TradeWindowEndTime)
-            {
-                UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
-                completedTradeParams.Add(tradeParams);
-                tradeParamsList.Remove(tradeParams);
-            }
-        }
-
-        if (completedTradeParams.Any())
-        {
-            WriteTradesToCsv(completedTradeParams);
-        }
-    }
+	    {
+	        var completedTradeParams = new List<TradeParameters>();
+	
+	        foreach (var tradeParams in tradeParamsList.ToList())
+	        {
+	            if (Time[0] > tradeParams.TradeWindowEndTime)
+	            {
+	                UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
+	                completedTradeParams.Add(tradeParams);
+	                tradeParamsList.Remove(tradeParams);
+	            }
+	        }
+	
+	        if (completedTradeParams.Any())
+	        {
+	            WriteTradesToCsv(completedTradeParams);
+	        }
+	    }
 		
+		double thePrice = 0;
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 			if ((State == State.Historical && trainModel) || (State == State.Realtime))
@@ -566,6 +588,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 					}
 					   UpdateVolumeProfile(e);
             		
+					thePrice = e.Price;
 					
 					if(price > lastPrice){
 						priceUp++;
@@ -815,7 +838,161 @@ namespace NinjaTrader.NinjaScript.Strategies
 			 }
 		}
 		
+		private const int RectangleWidth = 50; // Width of the volume profile visualization
+    	private const double MaxDeltaPercentage = 0.05; // Maximum delta as a percentage of chart height
+    	private const int RightPadding = 60; // Padding from the right edge of the chart
+
+		protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+		{
+		    base.OnRender(chartControl, chartScale);
 		
+		    if (accumulatedVolumeProfile == null || accumulatedVolumeProfile.Count == 0)
+		        return;
+		
+		    // Calculate delta metrics
+		    double deltaAbove = 0;
+		    double deltaBelow = 0;
+		    double deltaAtPrice = 0;
+		
+		    foreach (var kvp in accumulatedVolumeProfile)
+		    {
+		        if (kvp.Key > thePrice)
+		            deltaAbove += kvp.Value.Delta;
+		        else if (kvp.Key < thePrice)
+		            deltaBelow += kvp.Value.Delta;
+		        else
+		            deltaAtPrice += kvp.Value.Delta;
+		    }
+		
+		    double totalDelta = deltaAbove + deltaBelow + deltaAtPrice;
+		
+		    // Create brushes
+		    SharpDX.Direct2D1.SolidColorBrush positiveBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.DarkTurquoise);
+		    SharpDX.Direct2D1.SolidColorBrush negativeBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.DarkOrange);
+		    SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.White);
+		    //SharpDX.Direct2D1.SolidColorBrush centerLineBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.Gray);
+		
+		    var textFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 12)
+		    {
+		        TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading,
+		        ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Center
+		    };
+		
+		    var metricsFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 12)
+		    {
+		        TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading,
+		        ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Near
+		    };
+		
+		    // Render delta metrics
+		    float metricsX = 10;
+		    float metricsY = 10;
+		
+		    RenderTarget.DrawText($"Delta Above: {deltaAbove:F0}", metricsFormat, 
+		        new SharpDX.RectangleF(metricsX, metricsY, 200, 20), 
+		        deltaAbove >= 0 ? positiveBrush : negativeBrush);
+		
+		    RenderTarget.DrawText($"Delta Below: {deltaBelow:F0}", metricsFormat, 
+		        new SharpDX.RectangleF(metricsX, metricsY + 20, 200, 20), 
+		        deltaBelow >= 0 ? positiveBrush : negativeBrush);
+		
+		    RenderTarget.DrawText($"Total Delta: {totalDelta:F0}", metricsFormat, 
+		        new SharpDX.RectangleF(metricsX, metricsY + 40, 200, 20), 
+		        totalDelta >= 0 ? positiveBrush : negativeBrush);
+		
+		    // Find the maximum absolute delta for scaling
+		    double maxAbsDelta = accumulatedVolumeProfile.Max(kvp => Math.Abs(kvp.Value.Delta));
+		
+		    // Calculate the maximum width of the rectangles
+		    float maxWidth = (float)(chartControl.ActualWidth * MaxDeltaPercentage);
+		
+		    // Calculate the starting X position for the rectangles
+		    float rightEdge = (float)chartControl.ActualWidth;
+		    float startX = rightEdge - RightPadding;
+		    float centerX = startX - maxWidth / 2;
+		
+		    // Draw center line
+//		    RenderTarget.DrawLine(
+//		        new SharpDX.Vector2(centerX, 0),
+//		        new SharpDX.Vector2(centerX, (float)chartControl.ActualHeight),
+//		        centerLineBrush
+//		    );
+		
+		    SharpDX.Color4 darkTurquoise = new SharpDX.Color4(0.0f, 0.5f, 0.5f, 1.0f); // R: 0, G: 128, B: 128
+		    SharpDX.Color4 vibrantOrange = new SharpDX.Color4(1.0f, 0.5f, 0.0f, 1.0f); // R: 255, G: 128, B: 0
+		
+		    foreach (var kvp in accumulatedVolumeProfile.OrderByDescending(x => x.Key))
+		    {
+		        double price = kvp.Key;
+		        double delta = kvp.Value.Delta;
+		   
+		        // Skip if delta is zero
+		        if (delta == 0)
+		            continue;
+		
+		        // Calculate rectangle dimensions
+		        float y = (float)chartScale.GetYByValue(price);
+		        float height = Math.Max(1, 16); // Ensure at least 1 pixel height
+		        float calculatedWidth = (float)(Math.Abs(delta) / maxAbsDelta * maxWidth);
+		
+		        // Measure text width
+		        string deltaText = delta.ToString("F0");
+		        var textLayout = new SharpDX.DirectWrite.TextLayout(Core.Globals.DirectWriteFactory, deltaText, textFormat, float.MaxValue, float.MaxValue);
+		        float textWidth = textLayout.Metrics.Width;
+		        textLayout.Dispose();
+		
+		        // Ensure minimum width is at least as wide as the text plus some padding
+		        float minWidth = textWidth + 10; // Add 10 pixels of padding
+		
+		        // Use the larger of calculated width and minimum width
+		        float width = Math.Max(calculatedWidth, minWidth);
+		
+		        SharpDX.Direct2D1.SolidColorBrush brush = delta > 0 ? positiveBrush : negativeBrush;
+		
+		        // Create rectangle (always starting from the right)
+		        SharpDX.RectangleF rect = new SharpDX.RectangleF(
+		            startX - width,
+		            y - height / 2,
+		            width,
+		            height
+		        );
+		
+		        // Calculate opacity based on delta value (0.3 to 0.8 range)
+		        float opacity = 0.3f + (float)(0.5f * Math.Abs(delta) / maxAbsDelta);
+		
+		        // Create semi-transparent brush for fill
+		        using (SharpDX.Direct2D1.SolidColorBrush fillBrush = new SharpDX.Direct2D1.SolidColorBrush(
+		            RenderTarget, 
+		            new SharpDX.Color4(
+		                delta > 0 ? darkTurquoise.Red : vibrantOrange.Red,
+		                delta > 0 ? darkTurquoise.Green : vibrantOrange.Green,
+		                delta > 0 ? darkTurquoise.Blue : vibrantOrange.Blue,
+		                opacity)))
+		        {
+		            // Draw the filled rectangle
+		            RenderTarget.FillRectangle(rect, fillBrush);
+		        }
+		
+		        // Draw the outline
+		        RenderTarget.DrawRectangle(rect, brush);
+		
+		        SharpDX.RectangleF textRect = new SharpDX.RectangleF(
+		            startX - width, // Move text to the left of the bar
+		            y - height / 2,
+		            40, // Fixed width for text
+		            height
+		        );
+		        RenderTarget.DrawText(deltaText, textFormat, textRect, textBrush);
+		    }
+		
+		    // Dispose of resources
+		    positiveBrush.Dispose();
+		    negativeBrush.Dispose();
+		    textBrush.Dispose();
+		    //centerLineBrush.Dispose();
+		    textFormat.Dispose();
+		    metricsFormat.Dispose();
+		}
 		#endregion
 
 		#region Machine Learning Functions
@@ -1166,86 +1343,130 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 		}
 		
-		    private void UpdateVolumeProfile(MarketDataEventArgs e)
-			{
-			    double price = e.Price;
-			    double volume = e.Volume;
-			    double roundedPrice = Math.Round(price / (4 * TickSize)) * 4 * TickSize;
-			
-			    if (!accumulatedVolumeProfile.TryGetValue(roundedPrice, out VolumeProfileLevel level))
-			    {
-			        level = new VolumeProfileLevel();
-			    }
-			
-			    if (price > (e.Ask + e.Bid) / 2)
-			    {
-			        level.BuyVolume += volume;
-			    }
-			    else if (price < (e.Ask + e.Bid) / 2)
-			    {
-			        level.SellVolume += volume;
-			    }
-			    else
-			    {
-			        // If the price is exactly at the midpoint, we could split the volume
-			        // or handle it according to your strategy's requirements
-			        level.BuyVolume += volume / 2;
-			        level.SellVolume += volume / 2;
-			    }
-			
-			    accumulatedVolumeProfile[roundedPrice] = level;
-			
-			    //Print($"Updated Volume Profile: Price: {price}, Buy Volume: {level.BuyVolume}, Sell Volume: {level.SellVolume}, Type: {e.MarketDataType}");
-			}
-			
-			 private void RemoveOldestProfileData(Dictionary<double, VolumeProfileLevel> oldestProfile)
-		    {
-		        foreach (var kvp in oldestProfile)
-		        {
-		            if (accumulatedVolumeProfile.TryGetValue(kvp.Key, out VolumeProfileLevel accLevel))
-		            {
-		                accLevel.BuyVolume -= kvp.Value.BuyVolume;
-		                accLevel.SellVolume -= kvp.Value.SellVolume;
-		
-		                if (accLevel.BuyVolume <= 0 && accLevel.SellVolume <= 0)
-		                {
-		                    accumulatedVolumeProfile.Remove(kvp.Key);
-		                }
-		                else
-		                {
-		                    accumulatedVolumeProfile[kvp.Key] = accLevel;
-		                }
-		            }
-		        }
-		    }
+		private void UpdateVolumeProfile(MarketDataEventArgs e)
+		{
+			double price = e.Price;
+			double volume = e.Volume;
+			double roundedPrice = Math.Round(price / (4 * TickSize)) * 4 * TickSize;
 
-		
-			private void PrintVolumeDelta()
+			// Update accumulatedVolumeProfile
+			if (!accumulatedVolumeProfile.TryGetValue(roundedPrice, out VolumeProfileLevel accLevel))
 			{
-			    StringBuilder sb = new StringBuilder();
-			    sb.AppendLine($"Volume Profile Delta for Bar {CurrentBar}:");
-			
-			    var sortedProfile = accumulatedVolumeProfile.OrderByDescending(kvp => kvp.Key);
-			    double totalBuyVolume = 0;
-			    double totalSellVolume = 0;
-			
-			    foreach (var kvp in sortedProfile)
-			    {
-			        double price = kvp.Key;
-			        VolumeProfileLevel level = kvp.Value;
-			        double delta = level.Delta;
-			
-			        totalBuyVolume += level.BuyVolume;
-			        totalSellVolume += level.SellVolume;
-			
-			        sb.AppendLine($"Price: {price}, Buy Volume: {level.BuyVolume}, Sell Volume: {level.SellVolume}, Delta: {delta}");
-			    }
-			
-			    double totalDelta = totalBuyVolume - totalSellVolume;
-			    sb.AppendLine($"Total Buy Volume: {totalBuyVolume}, Total Sell Volume: {totalSellVolume}, Total Delta: {totalDelta}");
-			
-			    Print(sb.ToString());
+				accLevel = new VolumeProfileLevel();
 			}
+
+			// Update currentBarVolumeProfile
+			if (!currentBarVolumeProfile.TryGetValue(roundedPrice, out VolumeProfileLevel barLevel))
+			{
+				barLevel = new VolumeProfileLevel();
+			}
+
+			// Determine whether it's a buy or sell
+			double midpoint = (e.Ask + e.Bid) / 2;
+			if (price > midpoint)
+			{
+				accLevel.BuyVolume += volume;
+				barLevel.BuyVolume += volume;
+			}
+			else if (price < midpoint)
+			{
+				accLevel.SellVolume += volume;
+				barLevel.SellVolume += volume;
+			}
+			else
+			{
+				// Split the volume if price is exactly at the midpoint
+				accLevel.BuyVolume += volume / 2;
+				accLevel.SellVolume += volume / 2;
+				barLevel.BuyVolume += volume / 2;
+				barLevel.SellVolume += volume / 2;
+			}
+
+			accumulatedVolumeProfile[roundedPrice] = accLevel;
+			currentBarVolumeProfile[roundedPrice] = barLevel;
+		}
+
+			
+		private void RemoveOldestProfileData(Dictionary<double, VolumeProfileLevel> oldestProfile)
+		{
+			foreach (var kvp in oldestProfile)
+			{
+				double priceLevel = kvp.Key;
+				VolumeProfileLevel oldestLevel = kvp.Value;
+
+				if (accumulatedVolumeProfile.TryGetValue(priceLevel, out VolumeProfileLevel accLevel))
+				{
+					double previousBuyVolume = accLevel.BuyVolume;
+					double previousSellVolume = accLevel.SellVolume;
+
+					accLevel.BuyVolume -= oldestLevel.BuyVolume;
+					accLevel.SellVolume -= oldestLevel.SellVolume;
+
+					// Ensure volumes don't go negative
+					accLevel.BuyVolume = Math.Max(0, accLevel.BuyVolume);
+					accLevel.SellVolume = Math.Max(0, accLevel.SellVolume);
+
+					// Debugging output
+//					Print($"Removing old data at price {priceLevel}:");
+//					Print($"Previous Buy Volume: {previousBuyVolume}, Subtracting: {oldestLevel.BuyVolume}, New Buy Volume: {accLevel.BuyVolume}");
+//					Print($"Previous Sell Volume: {previousSellVolume}, Subtracting: {oldestLevel.SellVolume}, New Sell Volume: {accLevel.SellVolume}");
+
+					if (accLevel.BuyVolume < 0.01 && accLevel.SellVolume < 0.01)
+					{
+						accumulatedVolumeProfile.Remove(priceLevel);
+//						Print($"Price level {priceLevel} removed from accumulatedVolumeProfile.");
+					}
+					else
+					{
+						accumulatedVolumeProfile[priceLevel] = accLevel;
+					}
+				}
+			}
+
+			// Optional: Remove any levels with insignificant volume
+			RemoveInsignificantLevels();
+		}
+
+
+				private void RemoveInsignificantLevels(double threshold = 1.0)
+				{
+				    var keysToRemove = accumulatedVolumeProfile
+				        .Where(kvp => kvp.Value.BuyVolume + kvp.Value.SellVolume < threshold)
+				        .Select(kvp => kvp.Key)
+				        .ToList();
+				
+				    foreach (var key in keysToRemove)
+				    {
+				        accumulatedVolumeProfile.Remove(key);
+				    }
+					
+				}
+//			private void PrintVolumeDelta()
+//			{
+//			    StringBuilder sb = new StringBuilder();
+////			    sb.AppendLine($"Volume Profile Delta for Bar {CurrentBar}:");
+			
+//			    var sortedProfile = accumulatedVolumeProfile.OrderByDescending(kvp => kvp.Key);
+//			    double totalBuyVolume = 0;
+//			    double totalSellVolume = 0;
+				
+//			    foreach (var kvp in sortedProfile)
+//			    {
+//			        double price = kvp.Key;
+//			        VolumeProfileLevel level = kvp.Value;
+//			        double delta = level.Delta;
+			
+//			        totalBuyVolume += level.BuyVolume;
+//			        totalSellVolume += level.SellVolume;
+			
+//			        sb.AppendLine($"Price: {price}, Buy Volume: {level.BuyVolume}, Sell Volume: {level.SellVolume}, Delta: {delta}");
+//			    }
+			
+//			    double totalDelta = totalBuyVolume - totalSellVolume;
+////			    sb.AppendLine($"Total Buy Volume: {totalBuyVolume}, Total Sell Volume: {totalSellVolume}, Total Delta: {totalDelta}");
+			
+//			    Print(sb.ToString());
+//			}
 	
 		private VolumeProfileAnalysis AnalyzeVolumeProfile()
 		{
@@ -1277,7 +1498,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		    return analysis;
 		}
-			
+		
 		private void CheckAndEnterTrade(double price)
 		{
 		    if ( (orderId.Length > 0 || atmStrategyId.Length > 0 || tradeTaken || (!isLongMode && !isShortMode)))
@@ -1432,7 +1653,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		}
 				
 			// Helper method to find the closest key to a given price
-				private double FindClosestKey(IEnumerable<double> keys, double price)
+		private double FindClosestKey(IEnumerable<double> keys, double price)
 				{
 				    // If the keys collection is empty, return the original price
 				    if (!keys.Any())
@@ -1508,93 +1729,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		    return action;
 		}
-		
-		 private const int RectangleWidth = 50; // Width of the volume profile visualization
-    private const double MaxDeltaPercentage = 0.1; // Maximum delta as a percentage of chart height
-    private const int RightPadding = 60; // Padding from the right edge of the chart
-
-    protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
-{
-    base.OnRender(chartControl, chartScale);
-
-    if (accumulatedVolumeProfile == null || accumulatedVolumeProfile.Count == 0)
-        return;
-
-    SharpDX.Direct2D1.SolidColorBrush positiveBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.Green);
-    SharpDX.Direct2D1.SolidColorBrush negativeBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.Red);
-    SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.White);
-    SharpDX.Direct2D1.SolidColorBrush centerLineBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.Gray);
-
-    var textFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 10)
-    {
-        TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading,
-        ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Center
-    };
-
-    // Find the maximum absolute delta for scaling
-    double maxAbsDelta = accumulatedVolumeProfile.Max(kvp => Math.Abs(kvp.Value.Delta));
-
-    // Calculate the maximum width of the rectangles
-    float maxWidth = (float)(chartControl.ActualWidth * MaxDeltaPercentage);
-
-    // Calculate the starting X position for the rectangles
-    float rightEdge = (float)chartControl.ActualWidth;
-    float startX = rightEdge - RightPadding;
-    float centerX = startX - maxWidth / 2;
-
-    // Draw center line
-    RenderTarget.DrawLine(
-        new SharpDX.Vector2(centerX, 0),
-        new SharpDX.Vector2(centerX, (float)chartControl.ActualHeight),
-        centerLineBrush
-    );
-
-    foreach (var kvp in accumulatedVolumeProfile.OrderByDescending(x => x.Key))
-    {
-        double price = kvp.Key;
-        double delta = kvp.Value.Delta;
-
-        // Skip if delta is zero
-        if (delta == 0)
-            continue;
-
-        // Calculate rectangle dimensions
-        float y = (float)chartScale.GetYByValue(price);
-        float height = Math.Max(1, (float)chartScale.GetYByValue(price - TickSize) - y); // Ensure at least 1 pixel height
-        float width = (float)(Math.Abs(delta) / maxAbsDelta * maxWidth);
-
-        // Determine brush based on delta sign
-        SharpDX.Direct2D1.SolidColorBrush brush = delta > 0 ? positiveBrush : negativeBrush;
-
-        // Create rectangle (always starting from the right)
-        SharpDX.RectangleF rect = new SharpDX.RectangleF(
-            startX - width,
-            y - height / 2,
-            width,
-            height
-        );
-
-        // Draw the rectangle
-        RenderTarget.FillRectangle(rect, brush);
-
-        // Draw the delta value as text
-        string deltaText = delta.ToString("F0");
-        SharpDX.RectangleF textRect = new SharpDX.RectangleF(
-            startX - width - 40, // Move text to the left of the bar
-            y - height / 2,
-            40, // Fixed width for text
-            height
-        );
-        RenderTarget.DrawText(deltaText, textFormat, textRect, textBrush);
-    }
-
-    // Dispose of resources
-    positiveBrush.Dispose();
-    negativeBrush.Dispose();
-    textBrush.Dispose();
-    centerLineBrush.Dispose();
-    textFormat.Dispose();
-}
 				
 		private void ExecuteATMStrategy(OrderAction action)
 		{

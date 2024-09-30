@@ -77,10 +77,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double MADif { get; set; }
 		public double TOD { get; set; }
 		public double StdDev { get; set; }
-		public double PriceSpeed { get; set; }
 		public double PriceDistance { get; set; }
-		public double PriceDistanceRatio { get; set; }
-	
+		public double PriceDifference { get; set; }
+		
+		public double OpenToLow { get; set; }
+		public double OpenToHigh { get; set; }
+		
+		public double MomentumChange { get; set; }
+		public double ADXChange {get; set;}
+		
+		public double R2 {get; set;}
+		public double ChangeR2 {get; set;}
+		
 		public int WinCount { get; set; } = 0;
 		public int LossCount { get; set; } = 0;
 		public bool IsCompleted { get; set; } = false;
@@ -90,22 +98,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		
 		
-		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string imbalanceType, double volumeSpeed, double bolDif, double maDif,  double tod, double stdDev, 
-			double priceSpeed, double priceDistance, double priceDistanceRatio)
+		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string imbalanceType,  double priceDistance, double priceDifference, double adxChange, double momentumChange, double r2, double openToLow, double openToHigh)
 		{
 		    ImbVol = imbVol;
 		    AdvDetection = advDetection;
 			Ratio = ratio;
 		    EntryPrice = entryPrice;
 			ImbalanceType = imbalanceType;
-			VolumeSpeed = volumeSpeed;
-			BolDif = bolDif;
-			MADif = maDif;
-			TOD = tod;
-			StdDev = stdDev;
-			PriceSpeed = priceSpeed;
 			PriceDistance = priceDistance;
-			PriceDistanceRatio = priceDistanceRatio;
+			PriceDifference = priceDifference;
+			ADXChange = adxChange;
+			MomentumChange = momentumChange;
+			R2 = r2;
+			OpenToLow = openToLow;
+			OpenToHigh = openToHigh;
 		}
 		
 		public void UpdateWinRate()
@@ -117,10 +123,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 	}
 
 	public enum TradeType{
-		ReverseLong,
-		TrendLong,
-		ReverseShort,
-		TrendShort
+		Regress,
+		Trend
+//		ReverseLong,
+//		TrendLong,
+//		ReverseShort,
+//		TrendShort
 	}
 	
 	public class TradeParameters
@@ -226,17 +234,30 @@ namespace NinjaTrader.NinjaScript.Strategies
 		double highAsk;
 		double priceSpeed;
 		double priceDistance;
+		double priceDistance1Lag;
 		double priceDistanceRatio;
 		double priceUp;
 		double priceDown;
 		double R2;
+		
+	    double deltaAbove = 0;
+		double deltaBelow = 0;
+		double deltaAtPrice = 0;
+		double totalDelta = 0;
+		double thePrice = 0;
+		double delta = 0;
+		
+		double positionOffHigh = 0;
+		double positionOffLow = 0;
+		double deltaOffHigh = 0;
+		double deltaOffLow = 0;
 		
 		  private Dictionary<double, VolumeProfileLevel> accumulatedVolumeProfile;
 	    private Queue<Dictionary<double, VolumeProfileLevel>> historicalProfiles;
 
 		private Dictionary<double, VolumeProfileLevel> currentBarVolumeProfile;
 
-	    private const int MaxHistoricalBars = 3; // Adjust this value as needed
+	    private const int MaxHistoricalBars = 1; // Adjust this value as needed
 		
 		private List<SimTrade> simTrades = new List<SimTrade>();
 	    private DateTime lastSampleTime = DateTime.MinValue;
@@ -244,9 +265,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private DateTime lastDay = DateTime.MinValue;
 		
 		private DateTime predValueWrite = DateTime.MinValue;
-		
-		int askDetection = 0;
-		int bidDetection = 0;
 
 		// Flag to indicate whether the trades window period has ended
 		private bool tradesWindowEnded = false;
@@ -441,7 +459,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		bool firstStart = true;
 		double entropyValue = 0;
-		
+
 		protected override void OnBarUpdate()
 		{ 
 
@@ -451,6 +469,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		    if (CurrentBar != activeBar )
 		    {
+				
 				prevDelta=buysAtBar.Values.Sum() - sellsAtBar.Values.Sum();
 				if(State==State.Realtime && Optimise && MLOn)
 				{
@@ -470,6 +489,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				priceUp = 0;
 				priceDown = 0;
 				priceDistance = 0;
+				priceDifference = 0;
 				priceDistanceRatio = 0;
 				priceSpeed = 0;
 		    }
@@ -535,6 +555,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		private Dictionary<double, double> buysOffHigh = new Dictionary<double, double>();
 		private Dictionary<double, double> sellsOffHigh = new Dictionary<double, double>();
+		
+		double priceDifference;
 
 		private void ResetBuysAndSells()
 		{
@@ -562,18 +584,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 	            WriteTradesToCsv(completedTradeParams);
 	        }
 	    }
-		
-		double deltaAbove = 0;
-		double deltaBelow = 0;
-		double deltaAtPrice = 0;
-		double totalDelta = 0;
-		double thePrice = 0;
-		double delta = 0;
-		
-		double positionOffHigh = 0;
-		double positionOffLow = 0;
-		double deltaOffHigh = 0;
-		double deltaOffLow = 0;
+
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 			if ((State == State.Historical && trainModel) || (State == State.Realtime))
@@ -607,7 +618,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 					
 						
 					}
-				
+					
 					delta = buysAtBar.Values.Sum() - sellsAtBar.Values.Sum();
 					if(CurrentBar > 1){
 					   UpdateVolumeProfile(e);
@@ -630,6 +641,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				            deltaAtPrice += kvp.Value.Delta;
 				    }
 					}
+					
 				    totalDelta = deltaAbove + deltaBelow + deltaAtPrice;
 						
 					if(price > lastPrice){
@@ -641,21 +653,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 					lastPrice = price;
 					
 					priceDistance = priceUp + priceDown;
-					
-					if(priceUp > priceDown && priceDown > 0)
-					{
-						priceDistanceRatio = priceUp/priceDown;
-					}
-					else if (priceDown > priceUp && priceUp > 0)
-					{
-						priceDistanceRatio = priceDown/priceUp;
-					}else{
-						priceDistanceRatio = 1;
-					}
-					
-					
+					priceDifference = priceUp - priceDown;
 					if(CurrentBar >= 2){
 				
+					
 					TimeSpan t = Time[1]- Time[2];
 					priceSpeed = (Math.Abs(Close[1] - Close[2]) * 4 * TickSize) / (t.TotalSeconds > 0 ? t.TotalSeconds : 1);
 						
@@ -709,7 +710,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 					sellsOffLow.Clear();
 				}
 			
-
+				
+			
 				if (e.MarketDataType == MarketDataType.Last || e.MarketDataType == MarketDataType.Bid || e.MarketDataType == MarketDataType.Ask)
 				{
 					if (CurrentBar < 1)
@@ -717,6 +719,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						return;
 					}
 		
+					
 					if (incTrain || aggregate || trainModel)
 					{
 						aggregatedBuys = AggregateVolumesIntoGroups(buysAtBar, lowOfBar, highOfBar);
@@ -727,7 +730,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 					
 					if (trainModel || incTrain)
 					{
-						if (CurrentBar < 2) return;
+						if (CurrentBar < 3) return;
 						
 						if (incTrain && State != State.Realtime)
 							return;
@@ -795,7 +798,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							{
 								if (advDetection > tradeParams.AdvDetectionThreshold && imbVol > tradeParams.ImbVolThreshold && tradeRatio > tradeParams.RatioThreshold && tradeParams.allowInTrade == true)
 								{
-									SimulateTrade(tradeParams, imbalanceType, closestPrice);
+									SimulateTrade(tradeParams, imbalanceType, closePrice);
 								}
 							}
 						}
@@ -947,21 +950,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        new SharpDX.RectangleF(metricsX, metricsY + 40, 200, 20), 
 		        textBrush);
 			
-			RenderTarget.DrawText($"Trend Long Probability: {trendLongProb:F2}", metricsFormat, 
+			RenderTarget.DrawText($"Trend Probability: {trend:F2}", metricsFormat, 
 		        new SharpDX.RectangleF(metricsX, metricsY + 60, 200, 20), 
 		        textBrush);
 		
-	         RenderTarget.DrawText($"Trend Short Probability: {trendShortProb:F2}", metricsFormat, 
+	         RenderTarget.DrawText($"Regression Probability: {regress:F2}", metricsFormat, 
 		        new SharpDX.RectangleF(metricsX, metricsY + 80, 200, 20), 
 		      textBrush);
 		
-		    RenderTarget.DrawText($"Reverse Long Probability: {reverseLongProb:F2}", metricsFormat, 
-		        new SharpDX.RectangleF(metricsX, metricsY + 100, 200, 20), 
-		        textBrush);
-			
-			RenderTarget.DrawText($"Reverse Short Probability: {reverseShortProb:F2}", metricsFormat, 
-		        new SharpDX.RectangleF(metricsX, metricsY + 120, 200, 20), 
-		        textBrush);
 		
 		
 		    // Find the maximum absolute delta for scaling
@@ -1066,7 +1062,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			private void InitializeTradeParams()
 			{
 			    DateTime currentTime = Time[0];
-			    DateTime tradeWindowEndTime = currentTime.AddMinutes(tradesWindowMinutes);
+			    DateTime tradeWindowEndTime = currentTime.AddSeconds(tradesWindowMinutes);
 	
 			    if (initialLetters == "NQ")
 			    {
@@ -1162,17 +1158,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        tradeParams.ImbVolThreshold,
 			        tradeParams.AdvDetectionThreshold,
 			        tradeParams.RatioThreshold,
-			        imbalanceType == "Bid" ? price : price + levelstotrade * TickSize,
+			        price,
 					imbalanceType,
-			        PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1],
-			        PATIMachineLearningInputsV2().BollingerDiff[1],
-			        PATIMachineLearningInputsV2().MovingAvgDiff[1],
-			        PATIMachineLearningInputsV2().TimeOfDay[1],
-			        PATIMachineLearningInputsV2().StdDevBB[1],
-					priceSpeed,
 					priceDistance,
-					priceDistanceRatio
-	
+					priceDifference,
+					ADX(5)[0] - ADX(5)[1],
+					Momentum(5)[0] - Momentum(5)[1],
+					RSquared(5)[0],
+					Open[1] - Low[1],
+					High[1] - Open[1]
+					
 			    );
 			
 			    tradeParams.Trades.Add(newTrade);
@@ -1218,16 +1213,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				
 				if(trade.ImbalanceType == "Ask" && trade.Direction == "Long"){
-					trade.TradeType = TradeType.TrendLong;
+					trade.TradeType = TradeType.Trend;
 				}
 				if(trade.ImbalanceType == "Ask" && trade.Direction == "Short"){
-					trade.TradeType = TradeType.ReverseLong;
+					trade.TradeType = TradeType.Regress;
 				}
 				if(trade.ImbalanceType == "Bid" && trade.Direction == "Long"){
-					trade.TradeType = TradeType.ReverseShort;
+					trade.TradeType = TradeType.Regress;
 				}
 				if(trade.ImbalanceType == "Bid" && trade.Direction == "Short"){
-					trade.TradeType = TradeType.TrendShort;
+					trade.TradeType = TradeType.Trend;
 				}
 				
 			    trade.IsCompleted = true;
@@ -1282,14 +1277,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        {
 			            // Check if the header exists
 			            string firstLine = File.ReadLines(filePath).FirstOrDefault();
-			            headerExists = firstLine != null && firstLine.StartsWith("TradeType,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB,PriceSpeed,PriceDistance,PriceDistanceRatio");
+			            headerExists = firstLine != null && firstLine.StartsWith("TradeType,ImbVol,ImbRatio,AdversaryDetection,PriceDistance,PriceDifference,ADXChange,MomentumChange,R2,OpenToLow,OpenToHigh");
 			        }
 			
 			        using (StreamWriter writer = new StreamWriter(filePath, append: true))
 			        {
 			            if (!headerExists)
 			            {
-			                writer.WriteLine("TradeType,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,TimeOfDay,BolDif,MADif,StdBB,PriceSpeed,PriceDistance,PriceDistanceRatio");
+			                writer.WriteLine("TradeType,ImbVol,ImbRatio,AdversaryDetection,PriceDistance,PriceDifference,ADXChange,MomentumChange,R2,OpenToLow,OpenToHigh");
 			            }
 			
 			            StringBuilder sb = new StringBuilder();
@@ -1300,19 +1295,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 							foreach(var trade in tradeParams.Trades){
 //			                if (lastCompletedTrade != null)
 //			                {
-			                    sb.AppendFormat("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10},{11}\n",
+			                    sb.AppendFormat("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10}\n",
 			                        trade.TradeType,
 			                        trade.ImbVol,
 			                        Math.Round(trade.Ratio, 2),
 			                        trade.AdvDetection,
-			                        Math.Round(trade.VolumeSpeed, 2),
-			                        trade.TOD,
-			                        Math.Round(trade.BolDif, 2),
-			                        Math.Round(trade.MADif, 2),
-			                        Math.Round(trade.StdDev, 2),
-			                        Math.Round(trade.PriceSpeed, 2),
 			                        Math.Round(trade.PriceDistance, 2),
- 									Math.Round(trade.PriceDistanceRatio, 2)
+								  	Math.Round(trade.PriceDifference, 2),
+									Math.Round(trade.ADXChange, 2),
+									Math.Round(trade.MomentumChange, 2),
+									Math.Round(trade.R2, 2),
+ 									Math.Round(trade.OpenToLow, 2),
+									Math.Round(trade.OpenToHigh, 2)
 			                    );
 //			                }
 							}
@@ -1332,16 +1326,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 			{
 				var predictiveValues = new
 				{
-					VolumeSpeed = Math.Round(PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1], 2),
-					TimeOfDay = PATIMachineLearningInputsV2().TimeOfDay[1],
-					BolDif = Math.Round(PATIMachineLearningInputsV2().BollingerDiff[1], 2),
-					MADif = Math.Round(PATIMachineLearningInputsV2().MovingAvgDiff[1], 2),
-					StdBB = Math.Round(PATIMachineLearningInputsV2().StdDevBB[1], 2),
-					PriceSpeed = priceSpeed,
 					PriceDistance = priceDistance,
-					PriceDistanceRatio = priceDistanceRatio
-					
+					PriceDifference = priceDifference,
+					ADXChange = ADX(14)[0] - ADX(14)[1],
+					MomentumChange = Momentum(5)[0] - Momentum(5)[1],
+					R2 = RSquared(5)[0],
+					OpenToLow = Open[1] - Low[1],
+					OpenToHigh = High[1] - Open[1]
 				};
+				
+				Print(priceDistance);
 
 				try
 				{
@@ -1356,143 +1350,142 @@ namespace NinjaTrader.NinjaScript.Strategies
 			double prevratio;
 			int prevvol;
 			int prevdet;
-private void ReadOptimizedParamsFromServer()
-{
-    try
-    {
-        // Assuming HttpClientWrapper.Get returns Dictionary<string, object>
-        var optimizedParams = HttpClientWrapper.Get("optimized_params");
-
-        if (optimizedParams == null)
-        {
-            Print("Failed to retrieve response from server.");
-            return;
-        }
-
-        // Extract parameters
-        int newMinVolume = Convert.ToInt32(optimizedParams["ImbVol"]);
-        double newRatio = Convert.ToDouble(optimizedParams["ImbRatio"]);
-        int newDetectionValue = Convert.ToInt32(optimizedParams["AdversaryDetection"]);
-
-        // Handle TradeTypeProbabilities
-        List<double> tradeTypeProbabilities = null;
-        if (optimizedParams.ContainsKey("TradeTypeProbabilities"))
-        {
-            var probValue = optimizedParams["TradeTypeProbabilities"];
-            if (probValue != null)
-            {
-               
-
-                if (probValue is object[] probArray)
-                {
-                    tradeTypeProbabilities = probArray.Select(item => Convert.ToDouble(item)).ToList();
-                }
-                else if (probValue is ArrayList probArrayList)
-                {
-                    tradeTypeProbabilities = new List<double>();
-                    foreach (var item in probArrayList)
-                    {
-                        tradeTypeProbabilities.Add(Convert.ToDouble(item));
-                    }
-                }
-                else if (probValue is IEnumerable probEnumerable)
-                {
-                    tradeTypeProbabilities = new List<double>();
-                    foreach (var item in probEnumerable)
-                    {
-                        tradeTypeProbabilities.Add(Convert.ToDouble(item));
-                    }
-                }
-                else
-                {
-                    Print("TradeTypeProbabilities is not in expected format.");
-                }
-            }
-            else
-            {
-                Print("TradeTypeProbabilities is null.");
-            }
-        }
-
-        // Proceed with your logic
-        if (newMinVolume != prevvol || newRatio != prevratio || newDetectionValue != prevdet || TradeTypeProbabilitiesChanged(tradeTypeProbabilities))
-        {
-            minVolume = newMinVolume;
-            ratio = newRatio;
-            detectionValue = newDetectionValue;
-
-            if (tradeTypeProbabilities != null)
-            {
-                UpdateTradeTypeProbabilities(tradeTypeProbabilities);
-            }
-
-            Print($"MinVol: {minVolume}, Ratio: {ratio}, AdvDet: {detectionValue}");
-            if (tradeTypeProbabilities != null && tradeTypeProbabilities.Count == 4)
-            {
-                Print($"Trade Type Probabilities: ReverseLong: {tradeTypeProbabilities[0]:F2}, ReverseShort: {tradeTypeProbabilities[1]:F2}, TrendLong: {tradeTypeProbabilities[2]:F2}, TrendShort: {tradeTypeProbabilities[3]:F2}");
-            }
-            else
-            {
-                Print("Trade Type Probabilities not available or invalid.");
-            }
-
-            prevvol = newMinVolume;
-            prevratio = newRatio;
-            prevdet = newDetectionValue;
-        }
-        else
-        {
-            Print("No changes in optimized parameters.");
-        }
-    }
-    catch (HttpRequestException ex)
-    {
-        Print($"HTTP error reading optimized parameters from server: {ex.Message}");
-    }
-    catch (Exception ex)
-    {
-        Print($"Error reading optimized parameters from server: {ex.Message}");
-    }
-}
+		private void ReadOptimizedParamsFromServer()
+		{
+		    try
+		    {
+		        // Assuming HttpClientWrapper.Get returns Dictionary<string, object>
+		        var optimizedParams = HttpClientWrapper.Get("optimized_params");
+		
+		        if (optimizedParams == null)
+		        {
+		            Print("Failed to retrieve response from server.");
+		            return;
+		        }
+		
+		        // Extract parameters
+		        int newMinVolume = Convert.ToInt32(optimizedParams["ImbVol"]);
+		        double newRatio = Convert.ToDouble(optimizedParams["ImbRatio"]);
+		        int newDetectionValue = Convert.ToInt32(optimizedParams["AdversaryDetection"]);
+		
+		        // Handle TradeTypeProbabilities
+		        List<double> tradeTypeProbabilities = null;
+		        if (optimizedParams.ContainsKey("TradeTypeProbabilities"))
+		        {
+		            var probValue = optimizedParams["TradeTypeProbabilities"];
+		            if (probValue != null)
+		            {
+		               
+		
+		                if (probValue is object[] probArray)
+		                {
+		                    tradeTypeProbabilities = probArray.Select(item => Convert.ToDouble(item)).ToList();
+		                }
+		                else if (probValue is ArrayList probArrayList)
+		                {
+		                    tradeTypeProbabilities = new List<double>();
+		                    foreach (var item in probArrayList)
+		                    {
+		                        tradeTypeProbabilities.Add(Convert.ToDouble(item));
+		                    }
+		                }
+		                else if (probValue is IEnumerable probEnumerable)
+		                {
+		                    tradeTypeProbabilities = new List<double>();
+		                    foreach (var item in probEnumerable)
+		                    {
+		                        tradeTypeProbabilities.Add(Convert.ToDouble(item));
+		                    }
+		                }
+		                else
+		                {
+		                    Print("TradeTypeProbabilities is not in expected format.");
+		                }
+		            }
+		            else
+		            {
+		                Print("TradeTypeProbabilities is null.");
+		            }
+		        }
+		
+		        // Proceed with your logic
+		        if (newMinVolume != prevvol || newRatio != prevratio || newDetectionValue != prevdet || TradeTypeProbabilitiesChanged(tradeTypeProbabilities))
+		        {
+		            minVolume = newMinVolume;
+		            ratio = newRatio;
+		            detectionValue = newDetectionValue;
+		
+		            if (tradeTypeProbabilities != null)
+		            {
+		                UpdateTradeTypeProbabilities(tradeTypeProbabilities);
+		            }
+		
+		            Print($"MinVol: {minVolume}, Ratio: {ratio}, AdvDet: {detectionValue}");
+		            if (tradeTypeProbabilities != null && tradeTypeProbabilities.Count == 2)
+		            {
+		                Print($"Trade Type Probabilities: Regression: {tradeTypeProbabilities[0]:F2}, Trend: {tradeTypeProbabilities[1]:F2}");
+		            }
+		            else
+		            {
+		                Print("Trade Type Probabilities not available or invalid.");
+		            }
+		
+		            prevvol = newMinVolume;
+		            prevratio = newRatio;
+		            prevdet = newDetectionValue;
+		        }
+		        else
+		        {
+		            Print("No changes in optimized parameters.");
+		        }
+		    }
+		    catch (HttpRequestException ex)
+		    {
+		        Print($"HTTP error reading optimized parameters from server: {ex.Message}");
+		    }
+		    catch (Exception ex)
+		    {
+		        Print($"Error reading optimized parameters from server: {ex.Message}");
+		    }
+		}
 
 			private bool TradeTypeProbabilitiesChanged(List<double> newProbabilities)
-{
-    if (newProbabilities == null || newProbabilities.Count != 4)
-        return false;
+			{
+			    if (newProbabilities == null || newProbabilities.Count != 2)
+			        return false;
+			
+			    if (tradeTypeProbabilities == null || tradeTypeProbabilities.Count != 2)
+			        return true;
+			
+			    for (int i = 0; i < 2; i++)
+			    {
+			        if (Math.Abs(newProbabilities[i] - tradeTypeProbabilities[i]) > 0.001) // Threshold can be adjusted
+			            return true;
+			    }
+			
+			    return false;
+			}
 
-    if (tradeTypeProbabilities == null || tradeTypeProbabilities.Count != 4)
-        return true;
-
-    for (int i = 0; i < 4; i++)
-    {
-        if (Math.Abs(newProbabilities[i] - tradeTypeProbabilities[i]) > 0.001) // Threshold can be adjusted
-            return true;
-    }
-
-    return false;
-}
-
-private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
-{
-    if (newProbabilities == null || newProbabilities.Count != 4)
-    {
-        Print("Invalid trade type probabilities received.");
-        return;
-    }
-
-    tradeTypeProbabilities = newProbabilities;
-    reverseLongProb = newProbabilities[0];
-    reverseShortProb = newProbabilities[1];
-    trendLongProb = newProbabilities[2];
-    trendShortProb = newProbabilities[3];
-}
+		private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
+		{
+		    if (newProbabilities == null || newProbabilities.Count != 2)
+		    {
+		        Print("Invalid trade type probabilities received.");
+		        return;
+		    }
+		
+		    tradeTypeProbabilities = newProbabilities;
+		    regress = newProbabilities[0];
+		    trend = newProbabilities[1];
+	
+		}
 
 			
 		private List<double> tradeTypeProbabilities;
-		private double reverseLongProb;
-		private double reverseShortProb;
-		private double trendLongProb;
-		private double trendShortProb;
+		private double regress;
+	
+		private double trend;
+
 
 		#endregion
 		
@@ -1666,7 +1659,7 @@ private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
 		            deltaBelow += levelDelta;
 		    }
 		
-		    analysis.TotalDelta = totalBuyVolume - totalSellVolume;
+		    analysis.TotalDelta = totalBuyVolume + totalSellVolume;
 		    analysis.DeltaAbove = deltaAbove;
 		    analysis.DeltaBelow = deltaBelow;
 		    analysis.MaxVolume = accumulatedVolumeProfile.Max(kvp => kvp.Value.BuyVolume + kvp.Value.SellVolume);
@@ -1755,7 +1748,7 @@ private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
 		            Math.Abs(cumulativeBuys - cumulativeSells) >= minVolume &&
 		            Math.Min(cumulativeBuys, cumulativeSells) >= detectionValue &&
 		            ratio >= this.ratio &&
-		            (aggregate ? validPriceLevels == 1 : validPriceLevels == 4))
+		            (aggregate ? validPriceLevels == 1 : validPriceLevels == 4) )
 		        {
 		            validImb++;
 		            normalImbalanceDetected = true;
@@ -1775,19 +1768,18 @@ private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
 		        isBuyImbalance = cumulativeBuys > cumulativeSells;
 		        isSellImbalance = cumulativeSells > cumulativeBuys;
 		    }
-//		        OrderAction action = DetermineOrderAction(normalImbalanceDetected, false,
-//		            cumulativeBuys, cumulativeSells, 0, 0, significantZeroVolumeDetected, false, vpAnalysis);
+
 				double highestProb = 0;
 				
 			    highestProb = Math.Max(
-				    Math.Max(trendLongProb, trendShortProb),
-				    Math.Max(reverseShortProb, reverseLongProb)
+				 	trend,regress
 				);
-				double threshold = 0.5;
-		        if (isLongMode && isBuyImbalance && trendLongProb == highestProb && highestProb > threshold)
+				double threshold = 0.65;
+			
+			
+		        if (isLongMode && isBuyImbalance && trend == highestProb && highestProb >= threshold)
 		        {
-		           
-		                
+		              
 		        tradeTaken = true;
 		        isAtmStrategyCreated = false;
 		    	orderId = GetAtmStrategyUniqueId();
@@ -1806,10 +1798,10 @@ private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
 		        });
 		
 		            resetButtons();
-		         Print($"Trend mode: Long signal detected with probability {trendLongProb:F2}");
+		         //Print($"Trend mode: Long signal detected with probability {trendLongProb:F2}");
 		            
 		        }
-		        if (isShortMode && isSellImbalance && trendShortProb == highestProb  && highestProb > threshold)
+		        if (isShortMode && isSellImbalance && trend == highestProb  && highestProb >= threshold)
 		        {
 		           
 		               
@@ -1831,10 +1823,10 @@ private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
 		        });
 		
 		            resetButtons();
-		                Print($"Trend mode: Short signal detected with probability {trendShortProb:F2}");
+		                //Print($"Trend mode: Short signal detected with probability {trendShortProb:F2}");
 		            
 		        }
-		        if (isLongMode && isBuyImbalance && reverseLongProb == highestProb  && highestProb > threshold)
+		        if (isLongMode && isBuyImbalance && regress == highestProb  && highestProb >= threshold)
 		        {
 		           
 		               
@@ -1856,10 +1848,10 @@ private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
 				        });
 		
 		            resetButtons();
-		             Print($"Regression mode: Counter-trend Sell signal detected with probability {reverseLongProb:F2}");
+		             //Print($"Regression mode: Counter-trend Sell signal detected with probability {reverseLongProb:F2}");
 		            
 		        }
-		      	if (isShortMode && isSellImbalance && reverseShortProb == highestProb  && highestProb > threshold)
+		      	if (isShortMode && isSellImbalance && regress == highestProb  && highestProb >= threshold)
 		        {
 		              
 		         	 tradeTaken = true;
@@ -1880,13 +1872,10 @@ private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
 				        });
 		
 		           	 resetButtons();
-		             Print($"Regression mode: Counter-trend Buy signal detected with probability {reverseShortProb:F2}");
+		             //Print($"Regression mode: Counter-trend Buy signal detected with probability {reverseShortProb:F2}");
 		            
 		        }
-		        else
-		        {
-		            tradeTaken = false;
-		        }
+		  
 		    }
 		}
 				
@@ -2316,7 +2305,7 @@ private void UpdateTradeTypeProbabilities(List<double> newProbabilities)
 		{ get; set; } 
 		
 		[NinjaScriptProperty]
-		[Display( Name = "Trade window (minutes)", GroupName = "Machine Learning", Order = 0)]
+		[Display( Name = "Trade window (seconds)", GroupName = "Machine Learning", Order = 0)]
 		public int tradesWindowMinutes
 		{ get; set; } 
 		

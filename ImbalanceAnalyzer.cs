@@ -70,10 +70,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 	    public double StartingPrice { get; set; }
 	    public double CurrentPrice { get; set; }
 	    public DateTime StartTime { get; set; }
-	
 	    // Remove this property
 	    // public Dictionary<int, RangeData> RangeDataDict { get; set; }
-	
+		public int EntryIndex { get; set; }
 	    // Keep PreTradeDataAtStart to store the pre-trade data
 	    public Dictionary<double, PreTradeDataPoint> PreTradeDataAtStart { get; set; }
 	}
@@ -85,6 +84,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 	    public double RangeEndPrice { get; set; }
 	    public double BidVolume { get; set; }
 	    public double AskVolume { get; set; }
+		
 	}
 	
 	public class PreTradeDataPoint
@@ -475,46 +475,58 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        StartingPrice = price,
 		        CurrentPrice = price,
 		        StartTime = time,
-		        PreTradeDataAtStart = new Dictionary<double, PreTradeDataPoint>()
+		        PreTradeDataAtStart = new Dictionary<double, PreTradeDataPoint>(),
+		        EntryIndex = -1 // Initialize EntryIndex to an invalid value initially
 		    };
+		
+		    double closestPrice = double.MaxValue; // Track the closest price level
+		    double closestDifference = double.MaxValue; // Track the smallest difference
+		    int closestIndex = -1; // Initialize the closest index to an invalid value
 		
 		    lock (volumeDataLock)
 		    {
-		        int numRanges = rangeSize;
-		        double aggregationUnit = preTradeAggregationSize * TickSize;
-		
-		        for (int i = -numRanges; i <= numRanges; i++)
+		        int currentIndex = 0; // A variable to track the index for EntryIndex
+		        
+		        // Loop through the volumeData dictionary (all preTradeDataPoints)
+		        foreach (var kvp in volumeData)
 		        {
-		            double priceLevel = price + i * aggregationUnit;
-		            double roundedPriceLevel = Math.Round(priceLevel / aggregationUnit) * aggregationUnit;
+		            double roundedPriceLevel = kvp.Key; // Get the price level from the dictionary
+		            
+		            // Compare the price level with the current price to find the closest one
+		            double difference = Math.Abs(price - roundedPriceLevel);
+		            if (difference < closestDifference)
+		            {
+		                closestDifference = difference; // Update the closest difference
+		                closestPrice = roundedPriceLevel; // Update the closest price
+		                closestIndex = currentIndex; // Update the closest index (based on iteration index)
+		            }
 		
-		            if (volumeData.TryGetValue(roundedPriceLevel, out PreTradeDataPoint dataPoint))
+		            // Store the pre-trade data for this price level
+		            movement.PreTradeDataAtStart[roundedPriceLevel] = new PreTradeDataPoint
 		            {
-		                movement.PreTradeDataAtStart[roundedPriceLevel] = new PreTradeDataPoint
-		                {
-		                    Price = dataPoint.Price,
-		                    BidVolume = dataPoint.BidVolume,
-		                    AskVolume = dataPoint.AskVolume,
-		                    Time = dataPoint.Time
-		                };
-		            }
-		            else
-		            {
-		                movement.PreTradeDataAtStart[roundedPriceLevel] = new PreTradeDataPoint
-		                {
-		                    Price = roundedPriceLevel,
-		                    BidVolume = 0,
-		                    AskVolume = 0,
-		                    Time = time
-		                };
-		            }
+		                Price = kvp.Value.Price,
+		                BidVolume = kvp.Value.BidVolume,
+		                AskVolume = kvp.Value.AskVolume,
+		                Time = kvp.Value.Time,
+		            };
+		
+		            currentIndex++; // Increment the index as we loop through the volumeData
+		        }
+		
+		        // After the loop, assign the closest price index to the EntryIndex
+		        if (closestIndex != -1)
+		        {
+		            movement.EntryIndex = closestIndex; // Now 'EntryIndex' is based on the closest index in volumeData
+		            Print($"Entry Index found: {movement.EntryIndex} for Entry Price: {price}");
+		        }
+		        else
+		        {
+		            Print($"No closest match found for Entry Price: {price}");
 		        }
 		    }
 		
 		    activeMovements.Add(movement);
 		}
-
-
 
 		private void UpdateMovement(MovementData movement, double price)
 		{
@@ -727,101 +739,141 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
     }
 
-    // Ensure to include the PrintVolumeData method for debugging
-    private void PrintVolumeData(string context)
-    {
-        Print($"--- Volume Data ({context}) ---");
-        Print($"Recent High: {recentHigh}, Recent Low: {recentLow}");
-        foreach (var kvp in volumeData.OrderByDescending(x => x.Key))
-        {
-            Print($"Price: {kvp.Key}, Bid: {kvp.Value.BidVolume}, Ask: {kvp.Value.AskVolume}");
-        }
-        Print("--- End of Volume Data ---");
-    }	
+	    // Ensure to include the PrintVolumeData method for debugging
+	    private void PrintVolumeData(string context)
+	    {
+	        Print($"--- Volume Data ({context}) ---");
+	        Print($"Recent High: {recentHigh}, Recent Low: {recentLow}");
+	        foreach (var kvp in volumeData.OrderByDescending(x => x.Key))
+	        {
+	            Print($"Price: {kvp.Key}, Bid: {kvp.Value.BidVolume}, Ask: {kvp.Value.AskVolume}");
+	        }
+	        Print("--- End of Volume Data ---");
+	    }	
 
 		private string lastWrittenData = "";
 		
-private void WriteMovementDataToCSV(List<MovementData> completedMovements)
-{
-    string filePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\YourStrategy\movement_data.csv";
-    if (string.IsNullOrEmpty(filePath))
-        return;
-
-    try
-    {
-        string directory = System.IO.Path.GetDirectoryName(filePath);
-        if (!System.IO.Directory.Exists(directory))
-        {
-            System.IO.Directory.CreateDirectory(directory);
-        }
-        bool fileExists = System.IO.File.Exists(filePath);
-        bool headerExists = false;
-        if (fileExists)
-        {
-            string firstLine = System.IO.File.ReadLines(filePath).FirstOrDefault();
-            headerExists = firstLine != null && firstLine.StartsWith("StartingPrice,EndingPrice");
-        }
-
-        using (var writer = new System.IO.StreamWriter(filePath, append: true))
-        {
-            if (!headerExists)
-            {
-                // Write the CSV header with fixed column names
-                StringBuilder sbHeader = new StringBuilder();
-                sbHeader.Append("StartingPrice,EndingPrice");
-
-                for (int i = -rangeSize; i <= rangeSize; i++)
-                {
-                    sbHeader.Append($",PreRangeGroup{i}_BidVolume,PreRangeGroup{i}_AskVolume");
-                }
-
-                writer.WriteLine(sbHeader.ToString());
-            }
-
-            foreach (var movement in completedMovements)
-            {
-                StringBuilder sb = new StringBuilder();
-                sb.AppendFormat("{0},{1}", movement.StartingPrice, movement.CurrentPrice);
-
-                int numRanges = rangeSize;
-                double aggregationUnit = preTradeAggregationSize * TickSize;
-
-                for (int i = -numRanges; i <= numRanges; i++)
-                {
-                    double priceLevel = movement.StartingPrice + i * aggregationUnit;
-                    double roundedPriceLevel = Math.Round(priceLevel / aggregationUnit) * aggregationUnit;
-
-                    if (volumeData.TryGetValue(roundedPriceLevel, out PreTradeDataPoint dataPoint))
-                    {
-                        sb.AppendFormat(",{0},{1}", dataPoint.BidVolume, dataPoint.AskVolume);
-                    }
-                    else
-                    {
-                        sb.Append(",0,0");
-                    }
-                }
-
-                string currentData = sb.ToString();
-                if (currentData != lastWrittenData)
-                {
-                    writer.WriteLine(currentData);
-                    lastWrittenData = currentData;
-                    Print($"New data written to CSV: {currentData}");
-                }
-                else
-                {
-                    Print("Data unchanged, skipping CSV write.");
-                }
-            }
-
-            completedMovements.Clear();
-        }
-    }
-    catch (Exception ex)
-    {
-        Print($"Error writing to CSV: {ex.Message}");
-    }
-}
+		private int FindClosestEntryPriceIndex(double entryPrice, Dictionary<double, PreTradeDataPoint> preTradeData, double tolerance = 1e-2)
+		{
+		    double closestPrice = double.MaxValue;
+		    double closestDifference = double.MaxValue;
+		
+		    foreach (var kvp in anchorDataDict)
+		    {
+		        double price = kvp.Key;
+		        double difference = Math.Abs(price - entryPrice);
+		
+		        // If this difference is smaller than the current closest one, update it
+		        if (difference < closestDifference && difference <= tolerance)
+		        {
+		            closestDifference = difference;
+		            closestPrice = price;
+		        }
+		    }
+		
+		    // Return the index (or price level) closest to the entry price
+		    return closestPrice != double.MaxValue ? (int)closestPrice : -1;  // Adjust return value as per your needs
+		}
+		private void RecordEntryPriceIndex(MovementData movement)
+		{
+		    double entryPrice = movement.StartingPrice;
+		
+		    // Find the index that holds the entry price in the pre-trade data
+		    int entryIndex = FindClosestEntryPriceIndex(entryPrice, preTradeDataCollection.DataPoints);
+		
+		    if (entryIndex != -1)
+		    {
+		        Print($"Found entry price index: {entryIndex} for entry price: {entryPrice}");
+		        // Do something with this index, such as record it or use it in further analysis
+		        movement.EntryIndex = entryIndex;
+		    }
+		    else
+		    {
+		        Print($"No match found for entry price: {entryPrice}");
+		    }
+		}
+		
+		private void WriteMovementDataToCSV(List<MovementData> completedMovements)
+		{
+		    string filePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\YourStrategy\movement_data.csv";
+		    if (string.IsNullOrEmpty(filePath))
+		        return;
+		
+		    try
+		    {
+		        string directory = System.IO.Path.GetDirectoryName(filePath);
+		        if (!System.IO.Directory.Exists(directory))
+		        {
+		            System.IO.Directory.CreateDirectory(directory);
+		        }
+		        bool fileExists = System.IO.File.Exists(filePath);
+		        bool headerExists = false;
+		        if (fileExists)
+		        {
+		            string firstLine = System.IO.File.ReadLines(filePath).FirstOrDefault();
+		            headerExists = firstLine != null && firstLine.StartsWith("StartingPrice,EndingPrice");
+		        }
+		
+		        using (var writer = new System.IO.StreamWriter(filePath, append: true))
+		        {
+		            if (!headerExists)
+		            {
+		                // Write the CSV header with fixed column names
+		                StringBuilder sbHeader = new StringBuilder();
+		                sbHeader.Append("StartingPrice,EndingPrice,EntryIndex");
+		
+		                for (int i = -rangeSize; i <= rangeSize; i++)
+		                {
+		                    sbHeader.Append($",PreRangeGroup{i}_BidVolume,PreRangeGroup{i}_AskVolume");
+		                }
+		
+		                writer.WriteLine(sbHeader.ToString());
+		            }
+				
+		            foreach (var movement in completedMovements)
+		            {
+		                StringBuilder sb = new StringBuilder();
+		                sb.AppendFormat("{0},{1},{2}", movement.StartingPrice, movement.CurrentPrice, movement.EntryIndex);
+		
+		                int numRanges = rangeSize;
+		                double aggregationUnit = preTradeAggregationSize * TickSize;
+		
+		                for (int i = -numRanges; i <= numRanges; i++)
+		                {
+		                    double priceLevel = movement.StartingPrice + i * aggregationUnit;
+		                    double roundedPriceLevel = Math.Round(priceLevel / aggregationUnit) * aggregationUnit;
+		
+		                    if (volumeData.TryGetValue(roundedPriceLevel, out PreTradeDataPoint dataPoint))
+		                    {
+		                        sb.AppendFormat(",{0},{1}", dataPoint.BidVolume, dataPoint.AskVolume);
+		                    }
+		                    else
+		                    {
+		                        sb.Append(",0,0");
+		                    }
+		                }
+		
+		                string currentData = sb.ToString();
+		                if (currentData != lastWrittenData)
+		                {
+		                    writer.WriteLine(currentData);
+		                    lastWrittenData = currentData;
+		                    Print($"New data written to CSV: {currentData}");
+		                }
+		                else
+		                {
+		                    Print("Data unchanged, skipping CSV write.");
+		                }
+		            }
+		
+		            completedMovements.Clear();
+		        }
+		    }
+		    catch (Exception ex)
+		    {
+		        Print($"Error writing to CSV: {ex.Message}");
+		    }
+		}
 
 		private void SendPreTradeDataToServer()
 		{
@@ -872,13 +924,16 @@ private void WriteMovementDataToCSV(List<MovementData> completedMovements)
 		    try
 		    {
 		        var response = HttpClientWrapperMovement.Post("predict", dataToSend);
-		        if (response.ContainsKey("LongProbability") && response.ContainsKey("ShortProbability"))
+		        if (response.ContainsKey("LongProbability") && response.ContainsKey("ShortProbability")
+		            && response.ContainsKey("OptimalEntryIndex") && response.ContainsKey("OptimalEntryIndexProbability"))
 		        {
 		            double longProbability = Convert.ToDouble(response["LongProbability"]);
 		            double shortProbability = Convert.ToDouble(response["ShortProbability"]);
+		            int optimalEntryIndex = Convert.ToInt32(response["OptimalEntryIndex"]);
+		            double optimalEntryIndexProbability = Convert.ToDouble(response["OptimalEntryIndexProbability"]);
 		
 		            // Process predictions as needed
-		            ProcessPredictions(longProbability, shortProbability);
+		            ProcessPredictions(longProbability, shortProbability, optimalEntryIndex, optimalEntryIndexProbability);
 		        }
 		        else
 		        {
@@ -890,6 +945,7 @@ private void WriteMovementDataToCSV(List<MovementData> completedMovements)
 		        Print($"Error sending pre-trade data to server: {ex.Message}");
 		    }
 		}
+
 		
 		// List to store bbdif values over the lookback period
 private List<double> bbdifList = new List<double>();
@@ -954,86 +1010,114 @@ private double CalculateStandardDeviation(List<double> values)
 
 		
 		public bool tradetaken = false;
-		private void ProcessPredictions(double longProbability, double shortProbability)
-		{
-			// Removed OFI related processing
-		    // Print and handle predictions based on OFI
-		    // You may need to adjust this method based on your new strategy focus
-	
-		    Print($"Received predictions: longProbability={longProbability}, shortProbability={shortProbability}");
-			
-		    // Decide whether to enter a trade based on probability threshold
-		    double probabilityThreshold = 0.95; // Adjust based on your strategy
-	
-			 bool isBBDifWithinRange = IsCurrentBBDifWithinStdRange();
-			
-		    if (orderId.Length > 0 || atmStrategyId.Length > 0 /*|| tradetaken*/)
-		        return;
-	
-  if (!isBBDifWithinRange)
-    {
-        Print("Current market volatility is too high or too low. Skipping trade.");
+private void ProcessPredictions(double longProbability, double shortProbability, int optimalEntryIndex, double optimalEntryIndexProbability)
+{
+    Print($"Received predictions: longProbability={longProbability}, shortProbability={shortProbability}, optimalEntryIndex={optimalEntryIndex}, optimalEntryIndexProbability={optimalEntryIndexProbability}");
+    
+    // Define probability thresholds
+    double probabilityThreshold = 0.95; // Adjust as needed
+    double entryIndexProbabilityThreshold = 0.4; // Adjust as needed
+
+    // Check if already in a trade
+    if (orderId.Length > 0 || atmStrategyId.Length > 0)
         return;
+
+    // Verify conditions to enter a trade
+    if ((longProbability >= probabilityThreshold || shortProbability >= probabilityThreshold)
+        && optimalEntryIndexProbability >= entryIndexProbabilityThreshold)
+    {
+        // Map the OptimalEntryIndex
+        int mappedIndex = MapOptimalEntryIndex(optimalEntryIndex, rangeSize);
+        Print($"Mapped OptimalEntryIndex: {optimalEntryIndex} to Range Index: {mappedIndex}");
+
+        // Calculate the entry price
+        double entryPrice = CalculateEntryPrice(mappedIndex, referencePrice: Close[0], aggregationUnit: preTradeAggregationSize * TickSize);
+        Print($"Calculated Entry Price: {entryPrice}");
+
+        // Check if current price is within 2 ticks of the entry price
+        double currentPrice = Close[0];
+        if (Math.Abs(currentPrice - entryPrice) <= 4 * TickSize)
+        {
+            Print($"Current price {currentPrice} is within 2 ticks of Entry Price {entryPrice}. Executing trade.");
+
+            // Decide on order action based on probabilities
+            OrderAction orderAction = longProbability > shortProbability ? OrderAction.Buy : OrderAction.SellShort;
+
+            // Create the ATM strategy with the entry price level
+            isAtmStrategyCreated = false;
+            orderId = GetAtmStrategyUniqueId();
+            atmStrategyId = GetAtmStrategyUniqueId();
+
+            AtmStrategyCreate(
+                orderAction,
+                OrderType.Limit, entryPrice, 0, TimeInForce.Gtc,
+                orderId, ATMStrategy, atmStrategyId,
+                (atmCallbackErrorCode, atmCallBackId) =>
+                {
+                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+                    {
+                        isAtmStrategyCreated = true;
+                        Print($"ATM Strategy Created: {atmStrategyId} at Entry Price: {entryPrice}");
+                    }
+                    else
+                    {
+                        Print($"Error creating ATM Strategy: {atmCallbackErrorCode}");
+                    }
+                });
+
+            tradetaken = true;
+        }
+        else
+        {
+            Print($"Current price {currentPrice} is NOT within 2 ticks of Entry Price {entryPrice}. Trade not executed.");
+        }
     }
+    else
+    {
+        Print("Conditions not met for trade.");
+    }
+}
+
+
+/// <summary>
+/// Calculates the entry price based on the mapped index.
+/// </summary>
+/// <param name="mappedIndex">The index mapped to -10 to +10.</param>
+/// <param name="referencePrice">The reference price used for pre-trade data.</param>
+/// <param name="aggregationUnit">The size of each price aggregation unit.</param>
+/// <returns>The calculated entry price.</returns>
+private double CalculateEntryPrice(int mappedIndex, double referencePrice, double aggregationUnit)
+{
+    return mappedIndex > 0 ? recentHigh - ( preTradeDataCollection.PriceRange - (mappedIndex * aggregationUnit)) : recentLow + (preTradeDataCollection.PriceRange - (Math.Abs(mappedIndex) * aggregationUnit ) );
+}
 	
-		    if ((longProbability >= probabilityThreshold && isRegressionMode || shortProbability >= probabilityThreshold && isTrendMode))
-		    {
-		        // Enter a Long trade
-		        isAtmStrategyCreated = false;
-		        orderId = GetAtmStrategyUniqueId();
-		        atmStrategyId = GetAtmStrategyUniqueId();
-	
-		        AtmStrategyCreate(
-		            OrderAction.Buy,
-		            OrderType.Market, 0, 0, TimeInForce.Gtc,
-		            orderId, ATMStrategy, atmStrategyId,
-		            (atmCallbackErrorCode, atmCallBackId) =>
-		            {
-		                if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-		                {
-		                    isAtmStrategyCreated = true;
-		                    Print($"ATM Strategy Created: {atmStrategyId} at Price: {recentHigh}"); // Optional: Use recentHigh or specific price
-		                }
-		                else
-		                {
-		                    Print($"Error creating ATM Strategy: {atmCallbackErrorCode}");
-		                }
-		            });
-	
-		        tradetaken = true;
-		    }
-		    else if ((shortProbability >= probabilityThreshold  && isRegressionMode || longProbability >= probabilityThreshold && isTrendMode))
-		    {
-		        // Enter a Short trade
-		        isAtmStrategyCreated = false;
-		        orderId = GetAtmStrategyUniqueId();
-		        atmStrategyId = GetAtmStrategyUniqueId();
-	
-		        AtmStrategyCreate(
-		            OrderAction.Sell,
-		            OrderType.Market, 0, 0, TimeInForce.Gtc,
-		            orderId, ATMStrategy, atmStrategyId,
-		            (atmCallbackErrorCode, atmCallBackId) =>
-		            {
-		                if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-		                {
-		                    isAtmStrategyCreated = true;
-		                    Print($"ATM Strategy Created: {atmStrategyId} at Price: {recentLow}"); // Optional: Use recentLow or specific price
-		                }
-		                else
-		                {
-		                    Print($"Error creating ATM Strategy: {atmCallbackErrorCode}");
-		                }
-		            });
-	
-		        tradetaken = true;
-		    }
-		    else
-		    {
-		        // Do not trade
-		        Print("Probability below threshold, not entering trade.");
-		    }
-		}
+/// <summary>
+/// Maps the OptimalEntryIndex from 1-20 to -10 to +10, excluding 0.
+/// </summary>
+/// <param name="optimalEntryIndex">The index returned by the model (1-20).</param>
+/// <param name="rangeSize">The size of the range (e.g., 10).</param>
+/// <returns>The mapped index ranging from -10 to +10, excluding 0.</returns>
+private int MapOptimalEntryIndex(int optimalEntryIndex, int rangeSize)
+{
+    if (optimalEntryIndex < 1 || optimalEntryIndex > 2 * rangeSize)
+    {
+        Print($"OptimalEntryIndex {optimalEntryIndex} is out of expected range (1-{2 * rangeSize}).");
+        return 0; // Or another default value indicating no action
+    }
+
+    if (optimalEntryIndex <= rangeSize)
+    {
+        // Map 1-10 to -10 to -1
+        return optimalEntryIndex - rangeSize - 1;
+    }
+    else
+    {
+        // Map 11-20 to +1 to +10
+        return optimalEntryIndex - rangeSize;
+    }
+}
+
+
 	
 		#region Properties
 		

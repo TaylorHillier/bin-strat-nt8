@@ -1296,6 +1296,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			{
 				var predictiveValues = new
 				{
+					WinRate = 0.65,
 					PriceDistance = priceDistance,
 					PriceDifference = priceDifference,
 					ADXChange = ADX(14)[0] - ADX(14)[1],
@@ -1648,7 +1649,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        isSellImbalance = cumulativeSells > cumulativeBuys;
 		    }
 
-		        if (isLongMode && isBuyImbalance )
+		        if (isLongMode && isBuyImbalance && isTrendMode )
 		        {
 		              
 		        tradeTaken = true;
@@ -1672,7 +1673,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		         //Print($"Trend mode: Long signal detected with probability {trendLongProb:F2}");
 		            
 		        }
-		        if (isShortMode && isSellImbalance)
+		        if (isShortMode && isSellImbalance && isTrendMode)
 		        {
 		           
 		               
@@ -1697,7 +1698,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                //Print($"Trend mode: Short signal detected with probability {trendShortProb:F2}");
 		            
 		        }
-		        if (isLongMode && isBuyImbalance )
+		        if (isLongMode && isBuyImbalance && isRegressionMode)
 		        {
 		           
 		               
@@ -1722,7 +1723,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		             //Print($"Regression mode: Counter-trend Sell signal detected with probability {reverseLongProb:F2}");
 		            
 		        }
-		      	if (isShortMode && isSellImbalance )
+		      	if (isShortMode && isSellImbalance  && isTrendMode && isRegressionMode)
 		        {
 		              
 		         	 tradeTaken = true;

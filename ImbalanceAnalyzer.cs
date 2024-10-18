@@ -1,4 +1,4 @@
-#region Using declarations
+ #region Using declarations
 using System;
 using System.Collections.Generic;
 using System.ComponentModel;
@@ -13,7 +13,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Xml.Serialization;
 using System.Net.Http;
-using System.Data;
 using System.Web.Script.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
@@ -101,7 +100,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 	    // Key: Price level, Value: PreTradeDataPoint
 	    public Dictionary<double, PreTradeDataPoint> DataPoints { get; set; } = new Dictionary<double, PreTradeDataPoint>();
 	    public double CurrentPrice { get; set; }
-	    public double PriceRange { get; set; } = 10; // 5 points up and down
+	    public double PriceRange { get; set; } = 8; // 5 points up and down
 	}
 	
 	public class AnchorData
@@ -126,9 +125,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		private List<MovementData> activeMovements = new List<MovementData>();
 		
-		private double profitTargetTicks = 20;
+		private double profitTargetTicks = 8;
 		private double rangeTicks = 4;
-		private int movementIntervalSeconds = 3; // Every x seconds
+		private double movementIntervalSeconds = 0.5; // Every x seconds
 		private DateTime lastMovementStartTime = DateTime.MinValue;
 		private List<MovementData> completedMovements = new List<MovementData>();
 		private double lastPrice = 0;
@@ -238,13 +237,53 @@ namespace NinjaTrader.NinjaScript.Strategies
 		}
 
 		DateTime current = DateTime.MinValue;
+		double lastClose = 0;
 		
+		// With these lists
+		private List<double> historicalIncreases = new List<double>();
+		private List<double> historicalDecreases = new List<double>();
+		
+		// No need for a key, as List manages indices automatically
+		private int maxHistoricalData = 1000; // Adjust as needed
+
+
+        // Bayesian parameters
+        double priorPriceIncrease = 0.5; // P(H=1)
+        double priorPriceDecrease = 0.5; // P(H=0)
+
+        // Statistical parameters for likelihoods
+        private double muIncrease = 0;
+        private double sigmaIncrease = 1;
+        private double muDecrease = 0;
+        private double sigmaDecrease = 1;
+		
+		private double muRsiIncrease;
+		private double sigmaRsiIncrease;
+		private double muRsiDecrease;
+		private double sigmaRsiDecrease;
+		
+		private double muAdxIncrease;
+		private double sigmaAdxIncrease;
+		private double muAdxDecrease;
+		private double sigmaAdxDecrease;
+		
+		private double muMacdIncrease;
+		private double sigmaMacdIncrease;
+		private double muMacdDecrease;
+		private double sigmaMacdDecrease;
+
 		 protected override void OnBarUpdate()
         {
             // Ensure we have enough bars to calculate
             if (CurrentBar < nBarsList.Max())
                 return;
 
+			  if (CurrentBar == 0)
+		    {
+		        lastClose = Close[0];
+		        return;
+		    }
+	
             lock (lockObject)
             {
                 // Initialize anchor data if not already done
@@ -271,14 +310,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				 // angleDict.Clear(); // Removed
             }
-			
-			 if (Optimize && State == State.Realtime)
-			        {
-							if(Time[0] - current > TimeSpan.FromMilliseconds(200)){
-			            SendPreTradeDataToServer();
-							current = Time[0];
-							}
-			         }
 					
 			if (CurrentBar != activeBar )
 		    {
@@ -290,9 +321,44 @@ namespace NinjaTrader.NinjaScript.Strategies
 				buysAtBar.Clear();
 		        sellsAtBar.Clear();
 			}
+			
+			bool priceIncreased = Close[0] > lastClose + profitTargetTicks * TickSize;
+			
+			if (Close[0] > lastClose + profitTargetTicks * TickSize || Close[0] < lastClose  - profitTargetTicks * TickSize)
+            {
+				
+                // Update historical data
+                UpdateHistoricalData(priceIncreased);
+
+
+				lastClose = Close[0];
+            
+
+				
+            }
+			
+			
+						    // Get current total ask and bid volume
+		    double totalAskVolume = volumeData.Sum(v => v.Value.AskVolume);
+		    double totalBidVolume = volumeData.Sum(v => v.Value.BidVolume);
+						
+                // Compute posterior probabilities
+                double itotal = ComputeImbalance();
+               var posteriors = CalculatePosteriors(itotal, totalAskVolume, totalBidVolume);
+
+                p_h1_d = posteriors.Item1;
+                p_h0_d = posteriors.Item2;
+			    Print($"[{Time[0]}] Enter triggered. P(H=0|D) (Down) = {p_h0_d}.  P(H=1|D) (Up) = {p_h1_d}");
+			if(State == State.Realtime && Optimize){
+				SendObservationSequenceToServer();
+			}
+			if(State == State.Realtime){
+			 ProcessPredictions(predictedMovement, confidence);
+			}
         }
 
-		
+		double p_h1_d;
+			 double p_h0_d;
 		 protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
         {
             base.OnRender(chartControl, chartScale);
@@ -316,11 +382,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		            sbDom.AppendLine($"{price}: Bid={bidVolume}, Ask={askVolume}");
 		        }
+				
+				sbDom.AppendLine($"Long Probability(bayesian): {Math.Round(p_h1_d,3)}");
+				sbDom.AppendLine($"Short Probability(bayesian): {Math.Round(p_h0_d,3)}");
 
                 domDisplayText = sbDom.ToString();
 
                 // Create a text format
-                var textFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 12);
+                var textFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 14);
                 {
                     // Measure the text layout
                     using (var textLayout = new SharpDX.DirectWrite.TextLayout(Core.Globals.DirectWriteFactory, domDisplayText, textFormat, 200, float.MaxValue))
@@ -344,6 +413,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		double priceDown;
 		double priceDistance;
 		double bbdif;
+		
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 				if (e.MarketDataType == MarketDataType.Last)
@@ -352,12 +422,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 					double volume = e.Volume;
 					DateTime time = e.Time;
 
-					if(train || State == State.Realtime){
-					  preTradeDataCollection.CurrentPrice = Close[0];
+					
+					 preTradeDataCollection.CurrentPrice = Close[0];
 
 		            // Update pre-trade data
 		            UpdatePreTradeData(e);
-					}
+					
 					if (price > (e.Ask + e.Bid) / 2)
 					{
 						RecordTrade(buysAtBar, price, volume, e);
@@ -378,23 +448,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 						priceDown++;
 					}
 					
-				
-					if(train || inc && State == State.Realtime){
-							// Start a new movement every x seconds
-			            if ((lastMovementStartTime == DateTime.MinValue) || (time - lastMovementStartTime).TotalSeconds >= movementIntervalSeconds)
-			            {
-			                StartNewMovement(price, time);
-			                lastMovementStartTime = time;
-			            }
-			
-			      
-			
-			            // Update movements' current prices
-			            foreach (var movement in activeMovements.ToList())
-			            {
-			                UpdateMovement(movement, price);
-			            }
-					}
 
 					lastPrice = price;
 					
@@ -403,6 +456,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 				}
 				
 			if(State == State.Realtime){
+			
+		           
 			if (!isAtmStrategyCreated )
 				return;
 		
@@ -419,6 +474,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						// If the order state is terminal, reset the order id value
 						if (status[2] == "Filled" || status[2] == "Cancelled" || status[2] == "Rejected")
 							orderId = string.Empty;
+					
 					}
 				} // If the strategy has terminated reset the strategy id
 				else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat) 
@@ -468,85 +524,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private Dictionary<double, PreTradeDataPoint> aggregatedData = new Dictionary<double, PreTradeDataPoint>();
 		private readonly object volumeDataLock = new object();
 		
-		private void StartNewMovement(double price, DateTime time)
-		{
-		    MovementData movement = new MovementData
-		    {
-		        StartingPrice = price,
-		        CurrentPrice = price,
-		        StartTime = time,
-		        PreTradeDataAtStart = new Dictionary<double, PreTradeDataPoint>(),
-		        EntryIndex = -1 // Initialize EntryIndex to an invalid value initially
-		    };
-		
-		    double closestPrice = double.MaxValue; // Track the closest price level
-		    double closestDifference = double.MaxValue; // Track the smallest difference
-		    int closestIndex = -1; // Initialize the closest index to an invalid value
-		
-		    lock (volumeDataLock)
-		    {
-		        int currentIndex = 0; // A variable to track the index for EntryIndex
-		        
-		        // Loop through the volumeData dictionary (all preTradeDataPoints)
-		        foreach (var kvp in volumeData)
-		        {
-		            double roundedPriceLevel = kvp.Key; // Get the price level from the dictionary
-		            
-		            // Compare the price level with the current price to find the closest one
-		            double difference = Math.Abs(price - roundedPriceLevel);
-		            if (difference < closestDifference)
-		            {
-		                closestDifference = difference; // Update the closest difference
-		                closestPrice = roundedPriceLevel; // Update the closest price
-		                closestIndex = currentIndex; // Update the closest index (based on iteration index)
-		            }
-		
-		            // Store the pre-trade data for this price level
-		            movement.PreTradeDataAtStart[roundedPriceLevel] = new PreTradeDataPoint
-		            {
-		                Price = kvp.Value.Price,
-		                BidVolume = kvp.Value.BidVolume,
-		                AskVolume = kvp.Value.AskVolume,
-		                Time = kvp.Value.Time,
-		            };
-		
-		            currentIndex++; // Increment the index as we loop through the volumeData
-		        }
-		
-		        // After the loop, assign the closest price index to the EntryIndex
-		        if (closestIndex != -1)
-		        {
-		            movement.EntryIndex = closestIndex; // Now 'EntryIndex' is based on the closest index in volumeData
-		            Print($"Entry Index found: {movement.EntryIndex} for Entry Price: {price}");
-		        }
-		        else
-		        {
-		            Print($"No closest match found for Entry Price: {price}");
-		        }
-		    }
-		
-		    activeMovements.Add(movement);
-		}
-
-		private void UpdateMovement(MovementData movement, double price)
-		{
-		    movement.CurrentPrice = price;
-		
-		    // Calculate ticks moved
-		    double ticksMoved = Math.Abs(price - movement.StartingPrice) / TickSize;
-		
-		    if (ticksMoved >= profitTargetTicks)
-		    {
-		        // Movement completed
-		        completedMovements.Add(movement);
-		        activeMovements.Remove(movement);
-		
-		        // Write completed movements to CSV
-		        WriteMovementDataToCSV(completedMovements);
-		    }
-		}
-		
-				
 		
 		private void RecordTrade(Dictionary<double, double> priceDictionary, double price, double volume, MarketDataEventArgs e)
 		{
@@ -579,32 +556,30 @@ namespace NinjaTrader.NinjaScript.Strategies
 	
 		    return referencePrice;
 		}
-		
-		
 		// Inside your class
 		private SortedDictionary<double, PreTradeDataPoint> volumeData = new SortedDictionary<double, PreTradeDataPoint>();
 		private double recentHigh;
 		private double recentLow;
 		private int rangeSize;
+		private double aggregationUnit;
 		
-				private double aggregationUnit;
 		private void InitializeVolumeData(double initialPrice)
-    {
-        aggregationUnit = preTradeAggregationSize * TickSize;
-
-        // Calculate rangeSize based on PriceRange and aggregationUnit
-        rangeSize = (int)Math.Floor(preTradeDataCollection.PriceRange / aggregationUnit);
-        if (rangeSize < 1) rangeSize = 1; // Ensure at least one range
-
-        // Align initialPrice to the aggregationUnit
-        double centerPrice = Math.Floor(initialPrice / aggregationUnit) * aggregationUnit;
-
-        // Initialize recentHigh and recentLow based on centerPrice
-        recentHigh = centerPrice + (rangeSize * aggregationUnit);
-        recentLow = centerPrice - (rangeSize * aggregationUnit);
-
-        BuildVolumeData();
-    }
+	    {
+	        aggregationUnit = preTradeAggregationSize * TickSize;
+	
+	        // Calculate rangeSize based on PriceRange and aggregationUnit
+	        rangeSize = (int)Math.Floor(preTradeDataCollection.PriceRange / aggregationUnit);
+	        if (rangeSize < 1) rangeSize = 1; // Ensure at least one range
+	
+	        // Align initialPrice to the aggregationUnit
+	        double centerPrice = Math.Floor(initialPrice / aggregationUnit) * aggregationUnit;
+	
+	        // Initialize recentHigh and recentLow based on centerPrice
+	        recentHigh = centerPrice + (rangeSize * aggregationUnit);
+	        recentLow = centerPrice - (rangeSize * aggregationUnit);
+	
+	        BuildVolumeData();
+	    }
 
     private void BuildVolumeData()
     {
@@ -636,51 +611,59 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
     }
 
-    private void UpdatePreTradeData(MarketDataEventArgs e)
-    {
-        if (volumeData.Count == 0)
-        {
-            InitializeVolumeData(e.Price);
-        }
-
-        double roundedPrice = Math.Floor(e.Price / aggregationUnit) * aggregationUnit;
-
-        // Check if we need to adjust the range based on new high or low
-        if (e.Price > recentHigh)
-        {
-            AdjustVolumeDataRange(true);
-        }
-        else if (e.Price < recentLow)
-        {
-            AdjustVolumeDataRange(false);
-        }
-
-        // Update volume data
-        if (volumeData.ContainsKey(roundedPrice))
-        {
-            double midPrice = (e.Bid + e.Ask) / 2;
-
-            if (e.Price > midPrice)
-            {
-                // Aggressive buy
-                volumeData[roundedPrice].AskVolume += e.Volume;
-            }
-            else if (e.Price < midPrice)
-            {
-                // Aggressive sell
-                volumeData[roundedPrice].BidVolume += e.Volume;
-            }
-            else
-            {
-                // Trade at mid-price, split volume
-                volumeData[roundedPrice].BidVolume += e.Volume / 2;
-                volumeData[roundedPrice].AskVolume += e.Volume / 2;
-            }
-        }
-
-        // Optional: Print the volume data for debugging
-       // PrintVolumeData("volume");
-    }
+		  private void UpdatePreTradeData(MarketDataEventArgs e)
+		{
+		    if (volumeData.Count == 0)
+		    {
+		        InitializeVolumeData(e.Price);
+		    }
+		
+		    double roundedPrice = Math.Floor(e.Price / aggregationUnit) * aggregationUnit;
+		
+		    // Adjust the range if necessary
+		    if (e.Price > recentHigh)
+		    {
+		        AdjustVolumeDataRange(true);
+		    }
+		    else if (e.Price < recentLow)
+		    {
+		        AdjustVolumeDataRange(false);
+		    }
+		
+		    // Update volume data
+		    if (volumeData.ContainsKey(roundedPrice))
+		    {
+		        double midPrice = (e.Bid + e.Ask) / 2;
+		
+		        if (e.Price > midPrice)
+		        {
+		            // Aggressive buy
+		            volumeData[roundedPrice].AskVolume += e.Volume;
+		            //Print($"Aggressive Buy Recorded: Price {roundedPrice}, Volume {e.Volume}");
+		        }
+		        else if (e.Price < midPrice)
+		        {
+		            // Aggressive sell
+		            volumeData[roundedPrice].BidVolume += e.Volume;
+		           // Print($"Aggressive Sell Recorded: Price {roundedPrice}, Volume {e.Volume}");
+		        }
+		        else
+		        {
+		            // Trade at mid-price, split volume
+		            double halfVolume = e.Volume / 2;
+		            volumeData[roundedPrice].BidVolume += halfVolume;
+		            volumeData[roundedPrice].AskVolume += halfVolume;
+		            Print($"Mid-Price Trade Recorded: Price {roundedPrice}, Bid Volume {halfVolume}, Ask Volume {halfVolume}");
+		        }
+		    }
+		    else
+		    {
+		        Print($"Price {roundedPrice} not found in volumeData.");
+		    }
+		
+		    // Optional: Print the volume data for debugging
+		    //PrintVolumeData("After UpdatePreTradeData");
+		}
 
     private void AdjustVolumeDataRange(bool isNewHigh)
     {
@@ -774,6 +757,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    // Return the index (or price level) closest to the entry price
 		    return closestPrice != double.MaxValue ? (int)closestPrice : -1;  // Adjust return value as per your needs
 		}
+		
 		private void RecordEntryPriceIndex(MovementData movement)
 		{
 		    double entryPrice = movement.StartingPrice;
@@ -793,11 +777,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		}
 		
-		private void WriteMovementDataToCSV(List<MovementData> completedMovements)
+		private void WriteObservationSequenceToCSV()
 		{
-		    string filePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\YourStrategy\movement_data.csv";
-		    if (string.IsNullOrEmpty(filePath))
-		        return;
+		    string filePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\YourStrategy\hmm_training_data.csv";
 		
 		    try
 		    {
@@ -806,134 +788,85 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        {
 		            System.IO.Directory.CreateDirectory(directory);
 		        }
+		
 		        bool fileExists = System.IO.File.Exists(filePath);
-		        bool headerExists = false;
-		        if (fileExists)
-		        {
-		            string firstLine = System.IO.File.ReadLines(filePath).FirstOrDefault();
-		            headerExists = firstLine != null && firstLine.StartsWith("StartingPrice,EndingPrice");
-		        }
+		        bool isFileEmpty = new System.IO.FileInfo(filePath).Length == 0;
 		
 		        using (var writer = new System.IO.StreamWriter(filePath, append: true))
 		        {
-		            if (!headerExists)
+		            // Write the header if the file is new or empty
+		            if (!fileExists || isFileEmpty)
 		            {
-		                // Write the CSV header with fixed column names
-		                StringBuilder sbHeader = new StringBuilder();
-		                sbHeader.Append("StartingPrice,EndingPrice,EntryIndex");
-		
-		                for (int i = -rangeSize; i <= rangeSize; i++)
-		                {
-		                    sbHeader.Append($",PreRangeGroup{i}_BidVolume,PreRangeGroup{i}_AskVolume");
-		                }
-		
-		                writer.WriteLine(sbHeader.ToString());
-		            }
-				
-		            foreach (var movement in completedMovements)
-		            {
-		                StringBuilder sb = new StringBuilder();
-		                sb.AppendFormat("{0},{1},{2}", movement.StartingPrice, movement.CurrentPrice, movement.EntryIndex);
-		
-		                int numRanges = rangeSize;
-		                double aggregationUnit = preTradeAggregationSize * TickSize;
-		
-		                for (int i = -numRanges; i <= numRanges; i++)
-		                {
-		                    double priceLevel = movement.StartingPrice + i * aggregationUnit;
-		                    double roundedPriceLevel = Math.Round(priceLevel / aggregationUnit) * aggregationUnit;
-		
-		                    if (volumeData.TryGetValue(roundedPriceLevel, out PreTradeDataPoint dataPoint))
-		                    {
-		                        sb.AppendFormat(",{0},{1}", dataPoint.BidVolume, dataPoint.AskVolume);
-		                    }
-		                    else
-		                    {
-		                        sb.Append(",0,0");
-		                    }
-		                }
-		
-		                string currentData = sb.ToString();
-		                if (currentData != lastWrittenData)
-		                {
-		                    writer.WriteLine(currentData);
-		                    lastWrittenData = currentData;
-		                    Print($"New data written to CSV: {currentData}");
-		                }
-		                else
-		                {
-		                    Print("Data unchanged, skipping CSV write.");
-		                }
+		                writer.WriteLine("ObservationSequence,AskVolume,BidVolume,RSI,ADX,MACD");
 		            }
 		
-		            completedMovements.Clear();
+		            // Write each tuple (observation, ask volume, bid volume) in observationData
+		            foreach (var data in observationData)
+		            {
+		                string sequenceLine = $"{data.Observation},{data.AskVolume},{data.BidVolume},{data.Rsi},{data.Adx},{data.Macd}";
+		                writer.WriteLine(sequenceLine);
+		            }
+		
+		            // Optionally clear the sequences after writing
+		            observationData.Clear();
 		        }
 		    }
 		    catch (Exception ex)
 		    {
-		        Print($"Error writing to CSV: {ex.Message}");
+		        Print($"Error writing observation sequence to CSV: {ex.Message}");
 		    }
 		}
-
-		private void SendPreTradeDataToServer()
+		
+		
+			
+		private void SendObservationSequenceToServer()
 		{
-		    var preTradeData = new Dictionary<string, double>();
-		
-		    // Ensure aggregationUnit and rangeSize are properly defined
-		    double aggregationUnit = preTradeAggregationSize * TickSize;
-		    int numRanges = rangeSize; // Make sure 'rangeSize' is initialized elsewhere
-		
-		    // Use a reference price; since we don't have a movement here, use the current price
-		    double referencePrice = Close[0]; // Or use another appropriate price, e.g., Last price
-		
-		    for (int i = -numRanges; i <= numRanges; i++)
-		    {
-		        double priceLevel = referencePrice + i * aggregationUnit;
-		        double roundedPriceLevel = Math.Round(priceLevel / aggregationUnit) * aggregationUnit;
-		
-		        if (volumeData.TryGetValue(roundedPriceLevel, out PreTradeDataPoint dataPoint))
-		        {
-		            preTradeData[$"PreRangeGroup{i}_BidVolume"] = dataPoint.BidVolume;
-		            preTradeData[$"PreRangeGroup{i}_AskVolume"] = dataPoint.AskVolume;
-		        }
-		        else
-		        {
-		            preTradeData[$"PreRangeGroup{i}_BidVolume"] = 0;
-		            preTradeData[$"PreRangeGroup{i}_AskVolume"] = 0;
-		        }
-		    }
-		
-		    // Compute derived features: Volume Difference and Volume Ratio
-		    for (int i = -numRanges; i <= numRanges; i++)
-		    {
-		        string bidKey = $"PreRangeGroup{i}_BidVolume";
-		        string askKey = $"PreRangeGroup{i}_AskVolume";
-		
-		        double bidVolume = preTradeData.ContainsKey(bidKey) ? preTradeData[bidKey] : 0;
-		        double askVolume = preTradeData.ContainsKey(askKey) ? preTradeData[askKey] : 0;
-		
-		        preTradeData[$"VolumeDiff_{i}"] = bidVolume - askVolume;
-		        preTradeData[$"VolumeRatio_{i}"] = askVolume != 0 ? bidVolume / askVolume : 0;
-		    }
-		
-		    var dataToSend = new
-		    {
-		        PreTradeData = preTradeData
-		    };
-		
 		    try
 		    {
-		        var response = HttpClientWrapperMovement.Post("predict", dataToSend);
-		        if (response.ContainsKey("LongProbability") && response.ContainsKey("ShortProbability")
-		            && response.ContainsKey("OptimalEntryIndex") && response.ContainsKey("OptimalEntryIndexProbability"))
-		        {
-		            double longProbability = Convert.ToDouble(response["LongProbability"]);
-		            double shortProbability = Convert.ToDouble(response["ShortProbability"]);
-		            int optimalEntryIndex = Convert.ToInt32(response["OptimalEntryIndex"]);
-		            double optimalEntryIndexProbability = Convert.ToDouble(response["OptimalEntryIndexProbability"]);
+		        int sequenceLength = Math.Min(observationData.Count, 50);
 		
-		            // Process predictions as needed
-		            ProcessPredictions(longProbability, shortProbability, optimalEntryIndex, optimalEntryIndexProbability);
+		        // Ensure we have enough observations
+		        if (sequenceLength == 0)
+		        {
+		            Print("Not enough observations to send to the server.");
+		            return;
+		        }
+		
+		        var recentObservations = observationData.Skip(observationData.Count - sequenceLength).Take(sequenceLength).ToList();
+		
+		        // Extract observations, ask volumes, and bid volumes separately
+		        List<int> recentSequence = recentObservations.Select(data => data.Observation).ToList();
+		        List<double> recentAskVolumes = recentObservations.Select(data => data.AskVolume).ToList();
+		        List<double> recentBidVolumes = recentObservations.Select(data => data.BidVolume).ToList();
+		
+		        // Extract corresponding RSI, ADX, MACD values
+		        List<double> recentRsi = recentObservations.Select(data => data.Rsi).ToList(); // Ensure your tuple includes Rsi
+		        List<double> recentAdx = recentObservations.Select(data => data.Adx).ToList(); // Ensure your tuple includes Adx
+		        List<double> recentMacd = recentObservations.Select(data => data.Macd).ToList(); // Ensure your tuple includes Macd
+		
+		        // Prepare the data to send, including ask and bid volumes and technical indicators
+		        var data = new Dictionary<string, object>
+		        {
+		            { "ObservationSequence", recentSequence },
+		            { "AskVolume", recentAskVolumes },
+		            { "BidVolume", recentBidVolumes },
+		            { "RSI", recentRsi },
+		            { "ADX", recentAdx },
+		            { "MACD", recentMacd }
+		        };
+		
+		        // Print the sequence for debugging
+		        Print(string.Join(",", recentSequence));
+		
+		        // Send the data to the server's "predict" endpoint
+		        var response = HttpClientWrapperMovement.Post("predict", data);
+		
+		        // Handle the server's response
+		        if (response.ContainsKey("PredictedMovement") && response.ContainsKey("Confidence"))
+		        {
+		            predictedMovement = Convert.ToString(response["PredictedMovement"]);
+		            confidence = Convert.ToDouble(response["Confidence"]);
+		
 		        }
 		        else
 		        {
@@ -942,181 +875,418 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		    catch (Exception ex)
 		    {
-		        Print($"Error sending pre-trade data to server: {ex.Message}");
+		        Print($"Error sending observation sequence to server: {ex.Message}");
 		    }
 		}
 
+		string predictedMovement;
+ 		double confidence;
+		private List<int> observationSequence = new List<int>();
+		private int maxSequenceLength = 1000; // Adjust as needed
 		
-		// List to store bbdif values over the lookback period
-private List<double> bbdifList = new List<double>();
-
-// The lookback period for calculating standard deviation
-private int period = 500;  // or 10 depending on how many bars you want to look back
-
-// Define the standard deviation multiplier (e.g., 2 standard deviations)
-private double stdMultiplier = 0;
-
-// Method to check if the current bbdif falls within ±2 standard deviations
-private bool IsCurrentBBDifWithinStdRange()
-{
-    // Calculate the Bollinger Bands difference (bbdif) for the current bar
-    double bbdif = Bollinger(2, 5).Upper[0] - Bollinger(2, 5).Lower[0];
-    
-    // Add the current bbdif to the list
-    bbdifList.Add(bbdif);
-
-    // If the list exceeds the desired period, remove the oldest value
-    if (bbdifList.Count > period)
-    {
-        bbdifList.RemoveAt(0);
-    }
-
-    // Calculate the standard deviation and mean if we have enough data points
-    if (bbdifList.Count >= period)
-    {
-        double mean = bbdifList.Average();
-        double stdbb = CalculateStandardDeviation(bbdifList);
-
-        Print($"Mean of bbdif: {mean}, Standard deviation of bbdif: {stdbb}");
-        Print($"Current bbdif: {bbdif}");
-
-        // Check if the current bbdif falls within ±2 standard deviations
-        double upperBound = mean + stdMultiplier * stdbb;
-        double lowerBound = mean - stdMultiplier * stdbb;
-
-        Print($"Current bbdif should be between {lowerBound} and {upperBound}");
-
-        return ( bbdif <= upperBound);
-    }
-
-    return false;
-}
-
-// Method to calculate the standard deviation of a list of values
-private double CalculateStandardDeviation(List<double> values)
-{
-    if (values.Count == 0)
-        return 0;
-
-    // Calculate the mean
-    double mean = values.Average();
-
-    // Calculate the sum of the squared differences from the mean
-    double sumSquaredDiffs = values.Sum(val => Math.Pow(val - mean, 2));
-
-    // Return the standard deviation
-    return Math.Sqrt(sumSquaredDiffs / values.Count);
-}
-
-		
-		public bool tradetaken = false;
-private void ProcessPredictions(double longProbability, double shortProbability, int optimalEntryIndex, double optimalEntryIndexProbability)
-{
-    Print($"Received predictions: longProbability={longProbability}, shortProbability={shortProbability}, optimalEntryIndex={optimalEntryIndex}, optimalEntryIndexProbability={optimalEntryIndexProbability}");
-    
-    // Define probability thresholds
-    double probabilityThreshold = 0.95; // Adjust as needed
-    double entryIndexProbabilityThreshold = 0.4; // Adjust as needed
-
-    // Check if already in a trade
-    if (orderId.Length > 0 || atmStrategyId.Length > 0)
-        return;
-
-    // Verify conditions to enter a trade
-    if ((longProbability >= probabilityThreshold || shortProbability >= probabilityThreshold)
-        && optimalEntryIndexProbability >= entryIndexProbabilityThreshold)
-    {
-        // Map the OptimalEntryIndex
-        int mappedIndex = MapOptimalEntryIndex(optimalEntryIndex, rangeSize);
-        Print($"Mapped OptimalEntryIndex: {optimalEntryIndex} to Range Index: {mappedIndex}");
-
-        // Calculate the entry price
-        double entryPrice = CalculateEntryPrice(mappedIndex, referencePrice: Close[0], aggregationUnit: preTradeAggregationSize * TickSize);
-        Print($"Calculated Entry Price: {entryPrice}");
-
-        // Check if current price is within 2 ticks of the entry price
-        double currentPrice = Close[0];
-        if (Math.Abs(currentPrice - entryPrice) <= 4 * TickSize)
-        {
-            Print($"Current price {currentPrice} is within 2 ticks of Entry Price {entryPrice}. Executing trade.");
-
-            // Decide on order action based on probabilities
-            OrderAction orderAction = longProbability > shortProbability ? OrderAction.Buy : OrderAction.SellShort;
-
-            // Create the ATM strategy with the entry price level
-            isAtmStrategyCreated = false;
-            orderId = GetAtmStrategyUniqueId();
-            atmStrategyId = GetAtmStrategyUniqueId();
-
-            AtmStrategyCreate(
-                orderAction,
-                OrderType.Limit, entryPrice, 0, TimeInForce.Gtc,
-                orderId, ATMStrategy, atmStrategyId,
-                (atmCallbackErrorCode, atmCallBackId) =>
-                {
-                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-                    {
-                        isAtmStrategyCreated = true;
-                        Print($"ATM Strategy Created: {atmStrategyId} at Entry Price: {entryPrice}");
-                    }
-                    else
-                    {
-                        Print($"Error creating ATM Strategy: {atmCallbackErrorCode}");
-                    }
-                });
-
-            tradetaken = true;
-        }
-        else
-        {
-            Print($"Current price {currentPrice} is NOT within 2 ticks of Entry Price {entryPrice}. Trade not executed.");
-        }
-    }
-    else
-    {
-        Print("Conditions not met for trade.");
-    }
-}
-
-
-/// <summary>
-/// Calculates the entry price based on the mapped index.
-/// </summary>
-/// <param name="mappedIndex">The index mapped to -10 to +10.</param>
-/// <param name="referencePrice">The reference price used for pre-trade data.</param>
-/// <param name="aggregationUnit">The size of each price aggregation unit.</param>
-/// <returns>The calculated entry price.</returns>
-private double CalculateEntryPrice(int mappedIndex, double referencePrice, double aggregationUnit)
-{
-    return mappedIndex > 0 ? recentHigh - ( preTradeDataCollection.PriceRange - (mappedIndex * aggregationUnit)) : recentLow + (preTradeDataCollection.PriceRange - (Math.Abs(mappedIndex) * aggregationUnit ) );
-}
+		private List<double> historicalAskVolumes = new List<double>();  // List to store historical ask volumes
+		private List<double> historicalBidVolumes = new List<double>();  // List to store historical bid volumes
 	
-/// <summary>
-/// Maps the OptimalEntryIndex from 1-20 to -10 to +10, excluding 0.
-/// </summary>
-/// <param name="optimalEntryIndex">The index returned by the model (1-20).</param>
-/// <param name="rangeSize">The size of the range (e.g., 10).</param>
-/// <returns>The mapped index ranging from -10 to +10, excluding 0.</returns>
-private int MapOptimalEntryIndex(int optimalEntryIndex, int rangeSize)
-{
-    if (optimalEntryIndex < 1 || optimalEntryIndex > 2 * rangeSize)
-    {
-        Print($"OptimalEntryIndex {optimalEntryIndex} is out of expected range (1-{2 * rangeSize}).");
-        return 0; // Or another default value indicating no action
-    }
+		private List<double> historicalRsiIncreases = new List<double>();
+		private List<double> historicalRsiDecreases = new List<double>();
+		
+		private List<double> historicalAdxIncreases = new List<double>();
+		private List<double> historicalAdxDecreases = new List<double>();
+		
+		private List<double> historicalMacdIncreases = new List<double>();
+		private List<double> historicalMacdDecreases = new List<double>();
 
-    if (optimalEntryIndex <= rangeSize)
-    {
-        // Map 1-10 to -10 to -1
-        return optimalEntryIndex - rangeSize - 1;
-    }
-    else
-    {
-        // Map 11-20 to +1 to +10
-        return optimalEntryIndex - rangeSize;
-    }
-}
+		private List<(int Observation, double AskVolume, double BidVolume, double Rsi, double Adx, double Macd)> observationData = new List<(int, double, double, double, double, double)>();
 
+		private void UpdateHistoricalData(bool priceIncreased)
+		{
+		    // Calculate technical indicators
+		    double rsi = RSI(14, 3)[0];
+		    double adx = ADX(14)[0];
+		    double macd = MACD(12, 26, 9).Diff[0];
+		
+		    // Calculate volume imbalance
+		    double totalBidVolume = volumeData.Sum(v => v.Value.BidVolume);
+		    double totalAskVolume = volumeData.Sum(v => v.Value.AskVolume);
+		    double volumeImbalance = totalBidVolume - totalAskVolume;
+		
+		    // Compute imbalance total (itotal)
+		    double itotal = ComputeImbalance(); // This is equivalent to volumeImbalance
+		
+		    // Add the observation, ask, bid volumes, and technical indicators to observationData
+		    int observation = priceIncreased ? 1 : 0;
+		    observationData.Add((observation, totalAskVolume, totalBidVolume, rsi, adx, macd));
+		
+		    // Update historical data based on price movement
+		    if (priceIncreased)
+		    {
+		        historicalIncreases.Add(volumeImbalance);
+		        historicalRsiIncreases.Add(rsi);
+		        historicalAdxIncreases.Add(adx);
+		        historicalMacdIncreases.Add(macd);
+		    }
+		    else
+		    {
+		        historicalDecreases.Add(volumeImbalance);
+		        historicalRsiDecreases.Add(rsi);
+		        historicalAdxDecreases.Add(adx);
+		        historicalMacdDecreases.Add(macd);
+		    }
+		
+		    // Maintain the maximum sequence length
+		    if (observationData.Count > maxSequenceLength)
+		        observationData.RemoveAt(0);
+		
+		    if (historicalIncreases.Count > maxSequenceLength)
+		        historicalIncreases.RemoveAt(0);
+		    if (historicalDecreases.Count > maxSequenceLength)
+		        historicalDecreases.RemoveAt(0);
+		
+		    if (historicalRsiIncreases.Count > maxSequenceLength)
+		        historicalRsiIncreases.RemoveAt(0);
+		    if (historicalRsiDecreases.Count > maxSequenceLength)
+		        historicalRsiDecreases.RemoveAt(0);
+		
+		    if (historicalAdxIncreases.Count > maxSequenceLength)
+		        historicalAdxIncreases.RemoveAt(0);
+		    if (historicalAdxDecreases.Count > maxSequenceLength)
+		        historicalAdxDecreases.RemoveAt(0);
+		
+		    if (historicalMacdIncreases.Count > maxSequenceLength)
+		        historicalMacdIncreases.RemoveAt(0);
+		    if (historicalMacdDecreases.Count > maxSequenceLength)
+		        historicalMacdDecreases.RemoveAt(0);
+		
+		    // Optionally write the sequence to CSV periodically
+		    if (train)
+		    {
+		        WriteObservationSequenceToCSV();
+		    }
+		
+		    // Recalculate statistical parameters and Bayesian priors
+		    RecalculateStatistics();
+		}
+
+		private void RecalculateStatistics()
+		{
+		    // Recalculate for price increases
+		    if (historicalIncreases.Count > 0)
+		    {
+		        muIncrease = historicalIncreases.Average();
+		        sigmaIncrease = Math.Sqrt(historicalIncreases.Average(itotal => Math.Pow(itotal - muIncrease, 2)));
+		
+		        muRsiIncrease = historicalRsiIncreases.Average();
+		        sigmaRsiIncrease = Math.Sqrt(historicalRsiIncreases.Average(rsi => Math.Pow(rsi - muRsiIncrease, 2)));
+		
+		        muAdxIncrease = historicalAdxIncreases.Average();
+		        sigmaAdxIncrease = Math.Sqrt(historicalAdxIncreases.Average(adx => Math.Pow(adx - muAdxIncrease, 2)));
+		
+		        muMacdIncrease = historicalMacdIncreases.Average();
+		        sigmaMacdIncrease = Math.Sqrt(historicalMacdIncreases.Average(macd => Math.Pow(macd - muMacdIncrease, 2)));
+		    }
+		    else
+		    {
+		        muIncrease = 0;
+		        sigmaIncrease = 1;
+		        muRsiIncrease = 0;
+		        sigmaRsiIncrease = 1;
+		        muAdxIncrease = 0;
+		        sigmaAdxIncrease = 1;
+		        muMacdIncrease = 0;
+		        sigmaMacdIncrease = 1;
+		    }
+		
+		    // Recalculate for price decreases
+		    if (historicalDecreases.Count > 0)
+		    {
+		        muDecrease = historicalDecreases.Average();
+		        sigmaDecrease = Math.Sqrt(historicalDecreases.Average(itotal => Math.Pow(itotal - muDecrease, 2)));
+		
+		        muRsiDecrease = historicalRsiDecreases.Average();
+		        sigmaRsiDecrease = Math.Sqrt(historicalRsiDecreases.Average(rsi => Math.Pow(rsi - muRsiDecrease, 2)));
+		
+		        muAdxDecrease = historicalAdxDecreases.Average();
+		        sigmaAdxDecrease = Math.Sqrt(historicalAdxDecreases.Average(adx => Math.Pow(adx - muAdxDecrease, 2)));
+		
+		        muMacdDecrease = historicalMacdDecreases.Average();
+		        sigmaMacdDecrease = Math.Sqrt(historicalMacdDecreases.Average(macd => Math.Pow(macd - muMacdDecrease, 2)));
+		    }
+		    else
+		    {
+		        muDecrease = 0;
+		        sigmaDecrease = 1;
+		        muRsiDecrease = 0;
+		        sigmaRsiDecrease = 1;
+		        muAdxDecrease = 0;
+		        sigmaAdxDecrease = 1;
+		        muMacdDecrease = 0;
+		        sigmaMacdDecrease = 1;
+		    }
+		
+		    // Calculate Bayesian priors based on historical data
+		    CalculateBayesianPriors();
+		}
+
+		/// <summary>
+		/// Calculates Bayesian priors P(H=1) and P(H=0) based on historical data.
+		/// </summary>
+		private void CalculateBayesianPriors()
+		{
+		    double totalEvents = historicalIncreases.Count + historicalDecreases.Count;
+		
+		    if (totalEvents == 0)
+		    {
+		        // Avoid division by zero; assign equal priors
+		        priorPriceIncrease = 0.5;
+		        priorPriceDecrease = 0.5;
+				 // Optionally, log the updated priors for debugging
+		   
+		    }
+		    else
+		    {
+		        priorPriceIncrease = (double)historicalIncreases.Count / totalEvents;
+		        priorPriceDecrease = (double)historicalDecreases.Count / totalEvents;
+		
+		        // Ensure that priors sum to 1
+		        double sum = priorPriceIncrease + priorPriceDecrease;
+		        if (sum != 1.0)
+		        {
+		            priorPriceIncrease /= sum;
+		            priorPriceDecrease /= sum;
+		        }
+					 // Optionally, log the updated priors for debugging
+		   // Print($"[{Time[0]}] Updated Priors -> P(H=1): {priorPriceIncrease}, P(H=0): {priorPriceDecrease}");
+				
+		    }
+		
+		   
+		}
+
+        /// <summary>
+        /// Computes the total imbalance Itotal by summing (BidVolume - AskVolume) across all price levels.
+        /// </summary>
+        /// <returns>Total Imbalance (Itotal)</returns>
+        private double ComputeImbalance()
+        {
+            double itotal = 0;
+            foreach (var kvp in volumeData)
+            {
+                itotal += kvp.Value.BidVolume - kvp.Value.AskVolume;
+            }
+            return itotal;
+        }
+
+		/// <summary>
+		/// Calculates the posterior probabilities P(H=1|D) and P(H=0|D) using Bayes' Theorem, incorporating technical indicators.
+		/// </summary>
+		/// <param name="volumeImbalance">Current volume imbalance (bid - ask volume)</param>
+		/// <param name="totalAskVolume">Total Ask Volume</param>
+		/// <param name="totalBidVolume">Total Bid Volume</param>
+		/// <returns>Tuple containing (P(H=1|D), P(H=0|D))</returns>
+		private (double, double) CalculatePosteriors(double volumeImbalance, double totalAskVolume, double totalBidVolume)
+		{
+		    // Calculate likelihoods based on volume imbalance
+		    double p_d_h1 = GaussianPDF(volumeImbalance, muIncrease, sigmaIncrease); // P(D|H=1)
+		    double p_d_h0 = GaussianPDF(volumeImbalance, muDecrease, sigmaDecrease); // P(D|H=0)
+		
+		    // Incorporate RSI into the likelihood calculation
+		    double rsi = RSI(14, 3)[0];
+		    p_d_h1 *= GaussianPDF(rsi, muRsiIncrease, sigmaRsiIncrease);
+		    p_d_h0 *= GaussianPDF(rsi, muRsiDecrease, sigmaRsiDecrease);
+		
+		    // Incorporate ADX into the likelihood calculation
+		    double adx = ADX(14)[0];
+		    p_d_h1 *= GaussianPDF(adx, muAdxIncrease, sigmaAdxIncrease);
+		    p_d_h0 *= GaussianPDF(adx, muAdxDecrease, sigmaAdxDecrease);
+		
+		    // Incorporate MACD into the likelihood calculation
+		    double macd = MACD(12, 26, 9).Diff[0];
+		    p_d_h1 *= GaussianPDF(macd, muMacdIncrease, sigmaMacdIncrease);
+		    p_d_h0 *= GaussianPDF(macd, muMacdDecrease, sigmaMacdDecrease);
+		
+		    // Calculate marginal likelihood P(D)
+		    double p_d = (p_d_h1 * priorPriceIncrease) + (p_d_h0 * priorPriceDecrease);
+		
+		    // Prevent division by zero and handle underflow
+		    if (p_d == 0)
+		    {
+		        Print("[DEBUG] Marginal Likelihood is zero, returning neutral priors.");
+		        return (0.5, 0.5);  // Neutral priors when likelihood is zero
+		    }
+		
+		    // Calculate posterior probabilities
+		    double p_h1_d = (p_d_h1 * priorPriceIncrease) / p_d; // P(H=1|D)
+		    double p_h0_d = (p_d_h0 * priorPriceDecrease) / p_d; // P(H=0|D)
+		
+		    // Ensure non-zero posteriors
+		    if (p_h1_d < 1e-10) p_h1_d = 1e-10;
+		    if (p_h0_d < 1e-10) p_h0_d = 1e-10;
+		
+		    // Debugging prints for validation
+//		    Print($"Volume Imbalance: {volumeImbalance}, RSI: {rsi}, ADX: {adx}, MACD: {macd}");
+//		    Print($"Likelihood P(D|H=1): {p_d_h1}, P(D|H=0): {p_d_h0}");
+//		    Print($"Priors: P(H=1): {priorPriceIncrease}, P(H=0): {priorPriceDecrease}");
+//		    Print($"Marginal Likelihood P(D): {p_d}");
+//		    Print($"Posteriors: P(H=1|D): {p_h1_d}, P(H=0|D): {p_h0_d}");
+		
+		    return (p_h1_d, p_h0_d);
+		}
+
+        /// <summary>
+        /// Calculates the probability density of a value x for a Gaussian distribution.
+        /// </summary>
+        /// <param name="x">Value</param>
+        /// <param name="mu">Mean</param>
+        /// <param name="sigma">Standard Deviation</param>
+        /// <returns>Probability density P(x)</returns>
+        private double GaussianPDF(double x, double mu, double sigma)
+        {
+            if (sigma <= 0)
+                return 0;
+            double exponent = -Math.Pow(x - mu, 2) / (2 * Math.Pow(sigma, 2));
+            return (1 / (Math.Sqrt(2 * Math.PI) * sigma)) * Math.Exp(exponent);
+        }
+	
+		public bool tradetaken = false;
+		private void ProcessPredictions(string predictedMovement, double hmmConfidence)
+		{
+		    Print($"Received predictions: Predicted Move= {predictedMovement} Confidence: {hmmConfidence}");
+			 
+		    // Check if already in a trade
+		    if (orderId.Length > 0 || atmStrategyId.Length > 0)
+		        return;
+		
+			 double roundedPriceLevel = Math.Round(Close[0] / aggregationUnit) * aggregationUnit;
+			double askvol;
+			double bidvol;
+			 if (volumeData.TryGetValue(roundedPriceLevel, out PreTradeDataPoint dataPoint)){
+				 askvol= dataPoint.AskVolume;
+				 bidvol = dataPoint.BidVolume;
+			 }else{
+				 askvol = 0;
+				 bidvol = 0;
+			 }
+			 
+		    // Verify conditions to enter a trade
+		    if ((p_h1_d >= 0.7 || p_h0_d >= 0.7 ) )
+		    {
+		  
+		            // Decide on order action based on probabilities
+		            //OrderAction orderAction = longProbability > shortProbability ? OrderAction.Buy : OrderAction.Sell;
+				
+					if( p_h1_d >= 0.7 && isTrendMode ){
+				  
+		            // Create the ATM strategy with the entry price level
+		            isAtmStrategyCreated = false;
+		            orderId = GetAtmStrategyUniqueId();
+		            atmStrategyId = GetAtmStrategyUniqueId();
+		
+		            AtmStrategyCreate(
+		                OrderAction.Buy,
+		                OrderType.Market, 0, 0, TimeInForce.Gtc,
+		                orderId, ATMStrategy, atmStrategyId,
+		                (atmCallbackErrorCode, atmCallBackId) =>
+		                {
+		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                    {
+		                        isAtmStrategyCreated = true;
+		                        Print($"ATM Strategy Created: {atmStrategyId}");
+		                    }
+		                    else
+		                    {
+		                        Print($"Error creating ATM Strategy: {atmCallbackErrorCode}");
+		                    }
+		                });
+		
+		            tradetaken = true;
+					}
+					
+					if(  p_h0_d >= 0.7 && isTrendMode){
+				  
+		            // Create the ATM strategy with the entry price level
+		            isAtmStrategyCreated = false;
+		            orderId = GetAtmStrategyUniqueId();
+		            atmStrategyId = GetAtmStrategyUniqueId();
+		
+		            AtmStrategyCreate(
+		                OrderAction.Sell,
+		                OrderType.Market, 0, 0, TimeInForce.Gtc,
+		                orderId, ATMStrategy, atmStrategyId,
+		                (atmCallbackErrorCode, atmCallBackId) =>
+		                {
+		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                    {
+		                        isAtmStrategyCreated = true;
+		                        Print($"ATM Strategy Created: {atmStrategyId}");
+		                    }
+		                    else
+		                    {
+		                        Print($"Error creating ATM Strategy: {atmCallbackErrorCode}");
+		                    }
+		                });
+		
+		            tradetaken = true;
+					}
+					if( p_h0_d >= 0.7 && isRegressionMode ){
+				  
+		            // Create the ATM strategy with the entry price level
+		            isAtmStrategyCreated = false;
+		            orderId = GetAtmStrategyUniqueId();
+		            atmStrategyId = GetAtmStrategyUniqueId();
+		
+		            AtmStrategyCreate(
+		                OrderAction.Buy,
+		                OrderType.Market, 0, 0, TimeInForce.Gtc,
+		                orderId, ATMStrategy, atmStrategyId,
+		                (atmCallbackErrorCode, atmCallBackId) =>
+		                {
+		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                    {
+		                        isAtmStrategyCreated = true;
+		                        Print($"ATM Strategy Created: {atmStrategyId}");
+		                    }
+		                    else
+		                    {
+		                        Print($"Error creating ATM Strategy: {atmCallbackErrorCode}");
+		                    }
+		                });
+		
+		            tradetaken = true;
+					}
+					
+					if(  p_h1_d >= 0.7 && isRegressionMode){
+				  
+		            // Create the ATM strategy with the entry price level
+		            isAtmStrategyCreated = false;
+		            orderId = GetAtmStrategyUniqueId();
+		            atmStrategyId = GetAtmStrategyUniqueId();
+		
+		            AtmStrategyCreate(
+		                OrderAction.Sell,
+		                OrderType.Market, 0, 0, TimeInForce.Gtc,
+		                orderId, ATMStrategy, atmStrategyId,
+		                (atmCallbackErrorCode, atmCallBackId) =>
+		                {
+		                    if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                    {
+		                        isAtmStrategyCreated = true;
+		                        Print($"ATM Strategy Created: {atmStrategyId}");
+		                    }
+		                    else
+		                    {
+		                        Print($"Error creating ATM Strategy: {atmCallbackErrorCode}");
+		                    }
+		                });
+		
+		            tradetaken = true;
+					}
+		  
+		    }
+		    else
+		    {
+		        Print("Conditions not met for trade.");
+		    }
+		}
 
 	
 		#region Properties

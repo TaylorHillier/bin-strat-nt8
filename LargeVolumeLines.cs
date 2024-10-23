@@ -11,6 +11,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Xml.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
@@ -29,42 +30,111 @@ namespace NinjaTrader.NinjaScript.Strategies
 {
     public class BayesianVolumeStreakStrategy : Strategy
     {
+			[Browsable(false)]
+		[XmlIgnore]
+		public List<StreakLine> StreakLines
+		{
+		    get { return streakLines; }
+		}
+		
+        #region Variables
+
+        private int threshold = 3; // Default threshold
+        private Brush lineBrush = Brushes.Red;
+		private Brush lineBrushUp = Brushes.Green;
+		private Brush lineBrushDown = Brushes.Red;
+        private float lineThickness = 2f;
+
+        private double currentStreak = 0;
+        private double previousPrice = 0.0;
+
+        // List to store lines to be drawn
+        private List<StreakLine> streakLines = new List<StreakLine>();
+
+        // Class to represent a streak line
+        public class StreakLine
+        {
+            public int StartBar { get; set; }
+            public double PriceLevel { get; set; }
+			public string Direction { get; set; }
+        }
+
+        #endregion
+
+        #region Properties
+
+        [Range(1, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Threshold", Description = "Minimum number of consecutive bars at a price level to trigger a line.", Order = 1, GroupName = "Parameters")]
+        public int Threshold
+        {
+            get { return threshold; }
+            set { threshold = value; }
+        }
+		
+		[Range(1, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Number of Bars to Show", Description = "Number of Lines to Show.", Order = 2, GroupName = "Parameters")]
+        public int numBars
+       	{ get; set;}
+		
+        [XmlIgnore]
+        [Display(Name = "Line Color", Description = "Color of the streak lines.", Order = 3, GroupName = "Parameters")]
+        public Brush LineColor
+        {
+            get { return lineBrush; }
+            set { lineBrush = value; }
+        }
+		
+		[XmlIgnore]
+        [Display(Name = "Line Color Up", Description = "Color of the streak lines.", Order = 3, GroupName = "Parameters")]
+        public Brush LineColorUp
+        {
+            get { return lineBrushUp; }
+            set { lineBrushUp = value; }
+        }
+		
+		[XmlIgnore]
+        [Display(Name = "Line Color Down", Description = "Color of the streak lines.", Order = 3, GroupName = "Parameters")]
+        public Brush LineColorDown
+        {
+            get { return lineBrushDown; }
+            set { lineBrushDown = value; }
+        }
+
+        [Browsable(false)]
+        public string LineColorSerializable
+        {
+            get { return Serialize.BrushToString(lineBrush); }
+            set { lineBrush = Serialize.StringToBrush(value); }
+        }
+
+        [Range(1f, 5f), NinjaScriptProperty]
+        [Display(Name = "Line Thickness", Description = "Thickness of the streak lines.", Order = 4, GroupName = "Parameters")]
+        public float LineThickness
+        {
+            get { return lineThickness; }
+            set { lineThickness = value; }
+        }
+
+        [ NinjaScriptProperty]
+        [Display(Name = "Use Ask/Bid Sizes", Description = "Use Ask/Bid volumes over volume", Order = 4, GroupName = "Parameters")]
+        public bool UseAskBid {get; set;}
+        
+        #endregion
+		
         private VolumeStreakLines volumeStreakLines;
 
-        // Bayesian Parameters
-        private double priorH1 = 0.5; // P(H=1): Probability of price increasing
-        private double priorH0 = 0.5; // P(H=0): Probability of price decreasing
-
-		
 		public string  atmStrategyId			= string.Empty;
 		public string  orderId					= string.Empty;
 		public bool	isAtmStrategyCreated	= false;
-		
-        // Gaussian Parameters (Initialize with example values; adjust based on historical data)
-        private double muPriceH1 = 0.0;
-        private double sigmaPriceH1 = 1.0;
-        private double muPriceH0 = 0.0;
-        private double sigmaPriceH0 = 1.0;
 
-        // Historical Return Data for Gaussian Parameter Estimation
-        private List<double> historicalReturnsH1 = new List<double>();
-        private List<double> historicalReturnsH0 = new List<double>();
-
-        // Window Size for Rolling Gaussian Parameter Calculation
-        private int windowSize = 200;
-
-        // Flags to ensure priors are recalculated after each update
-        private bool priorsCalculated = false;
-
-		
-			private bool isRegressionMode = false;
+		private bool isRegressionMode = false;
 		private bool isTrendMode = false;
 	
-		  private int lastProcessedStreakStartBar = -1;
+		private int lastProcessedStreakStartBar = -1;
 		
 		private bool isLongMode = false;
 		private bool isShortMode = false;
-			private bool isAutoArm = false;
+		private bool isAutoArm = false;
 			//buttons/grid
 		private System.Windows.Controls.Button longButton;
 		private System.Windows.Controls.Button shortButton;
@@ -83,19 +153,25 @@ namespace NinjaTrader.NinjaScript.Strategies
                 
                 StopTargetHandling = StopTargetHandling.PerEntryExecution;
 				ATMStrategy = "NQ Hyperscalp";
+				
                 // Set other default properties as needed
+				
+				   // Default parameters
+                Threshold = 3;
+				LineColor = Brushes.Red;
+                LineColorUp = Brushes.Green;
+				LineColorDown = Brushes.Red;
+                LineThickness = 2f;
             }
             else if (State == State.Configure)
             {
-                // Add the VolumeStreakLines indicator with desired parameters
-                // Example: Threshold=40, NumBars=8, LineThickness=2
-                volumeStreakLines = VolumeStreakLines(20, 30, 1f);
-                AddChartIndicator(volumeStreakLines);
+              
             }
             else if (State == State.DataLoaded)
             {
             
-            }else if (State == State.Historical)
+            }
+			else if (State == State.Historical)
 			{
 			if (UserControlCollection.Contains(myGrid))
 					return;
@@ -208,100 +284,229 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected override void OnBarUpdate()
         {
       
+			if(UseAskBid)
+                return;
+            // Ensure we have at least one bar
+            if (CurrentBars[0] < 1)
+                return;
+
+            double currentPrice = Closes[1][0];
+			
+			
+            if (currentPrice == previousPrice)
+            {
+		
+                currentStreak++;
+			
+				
+            }
+            else if(currentPrice != previousPrice)
+            {
+			
+                currentStreak = 1;
+                
+            }
+
+            if (currentStreak == Threshold)
+            {
+                int streakStartBar = CurrentBars[0] ;
+                streakLines.Add(new StreakLine
+                {
+                    StartBar = streakStartBar,
+                    PriceLevel = currentPrice
+                });
+            }
+			
+			if(streakLines.Count() > numBars){
+				streakLines.RemoveAt(0);
+			}
+			
+			previousPrice = currentPrice;
+			
+
+            
+     
         }
 			
-		int previousCount = 0;
-		
-		  protected override void OnMarketData(MarketDataEventArgs e)
+		public double upVolume;
+		public double downVolume;
+		public string direction;
+		double referencePrice = 0;
+        protected override void OnMarketData(MarketDataEventArgs e)
         {
-			
+            if(!UseAskBid)
+                return;
+            // Ensure we have at least one bar
             if (CurrentBar < 1)
                 return;
 
-			
-			
-                 // Reference the existing VolumeStreakLines indicator
-            List<VolumeStreakLines.StreakLine> streaks = volumeStreakLines.StreakLines;
-
-            if (streaks == null || streaks.Count == 0)
-                return;
-
-            // Only process Last price updates
-            if (e.MarketDataType != MarketDataType.Last)
-                return;
-
             double currentPrice = e.Price;
-
-            // Identify new streak lines that have not been processed yet
-            List<VolumeStreakLines.StreakLine> newStreaks = streaks
-                .Where(s => s.StartBar > lastProcessedStreakStartBar)
-                .ToList();
-
-            // Debugging: Print information to verify detection
-            Print($"Order ID Length: {orderId.Length}");
-            Print($"ATM Strategy ID Length: {atmStrategyId.Length}");
-            Print($"New Streaks Count: {newStreaks.Count}");
-            Print($"Previous Count: {previousCount}");
-			 
-      
-			// Process each new streak
-            foreach (var streak in newStreaks)
-            {
-                // Update the last processed streak start bar
-                if (streak.StartBar > lastProcessedStreakStartBar)
-                    lastProcessedStreakStartBar = streak.StartBar;
-
-                double streakPrice = streak.PriceLevel;
-			 
-				 	 if (orderId.Length > 0 || atmStrategyId.Length > 0 || State != State.Realtime)
-	        	return;
-					 
-	            if (isLongMode )
+			double askPrice = e.Ask;
+			double bidPrice = e.Bid;
+			double volume = e.Volume;
+			if(e.MarketDataType != MarketDataType.Last)
+				return;
+			
+	            if (Instrument.FullName.StartsWith("NQ") ? currentPrice <= previousPrice + 2 * TickSize || currentPrice >= previousPrice - 2 * TickSize : currentPrice == previousPrice)
 	            {
-	                 isAtmStrategyCreated = false;
-			    	orderId = GetAtmStrategyUniqueId();
-			    	atmStrategyId = GetAtmStrategyUniqueId();
-			
-			    	AtmStrategyCreate(
-			        OrderAction.Buy,
-			        OrderType.Market, 0, 0, TimeInForce.Gtc,
-			        orderId, ATMStrategy, atmStrategyId,
-			        (atmCallbackErrorCode, atmCallBackId) =>
-			        {
-			            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-			            {
-			                isAtmStrategyCreated = true;
-			            }
-			        });
-	                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
+		
+					if(Instrument.FullName.StartsWith("NQ")){
+					}
+	                currentStreak+=e.Volume;
+					if(currentPrice > (bidPrice + askPrice) / 2){
+						upVolume += volume;
+						downVolume = 0;
+						//Print(upVolume + " up volume at " + currentPrice);
+					}
+					
+					if(currentPrice < (bidPrice + askPrice) / 2){
+						downVolume += volume;
+						upVolume = 0;
+						//Print(downVolume + " down volume at " + currentPrice);
+					}
 	            }
-	
-	            if (isShortMode)
+	            if(Instrument.FullName.StartsWith("NQ")){
+					if(currentPrice > previousPrice + 2 * TickSize || currentPrice < previousPrice - 2 * TickSize)
+			            {
+							
+			                currentStreak = 1;
+							upVolume = 0;
+							downVolume = 0;
+							direction = "na";
+							previousPrice = currentPrice;
+							
+			            }
+						
+				}else 
+				{
+					if(currentPrice != previousPrice )
+				     {
+							Print("hello");
+			                currentStreak = 1;
+							upVolume = 0;
+							downVolume = 0;
+							direction = "na";
+							previousPrice = currentPrice;
+							
+			            }
+				
+				}
+			
+					if(/*referencePrice < currentPrice &&*/ upVolume > downVolume){
+					direction = "Up";
+					}
+					else if(/*referencePrice > currentPrice  &&*/ upVolume < downVolume){
+						direction = "Down";
+					}
+	            if (upVolume == Threshold || downVolume == Threshold)
 	            {
-	                isAtmStrategyCreated = false;
-			    	orderId = GetAtmStrategyUniqueId();
-			    	atmStrategyId = GetAtmStrategyUniqueId();
 			
-			    	AtmStrategyCreate(
-			        OrderAction.Sell,
-			        OrderType.Market, 0, 0, TimeInForce.Gtc,
-			        orderId, ATMStrategy, atmStrategyId,
-			        (atmCallbackErrorCode, atmCallBackId) =>
-			        {
-			            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-			            {
-			                isAtmStrategyCreated = true;
-			            }
-			        });
-	                Print($"[{Time[0]}] Entering Short Position (Auto Arm) ");
+	                int streakStartBar = CurrentBars[0] ;
+	                streakLines.Add(new StreakLine
+	                {
+	                    StartBar = streakStartBar,
+	                    PriceLevel = currentPrice,
+						Direction = direction
+	                });
+					
+						if (orderId.Length > 0 || atmStrategyId.Length > 0 || State != State.Realtime)
+		        	return;
+						 
+		            if (UseAskBid ? direction == "Up"  && /*isLongMode &&*/ isTrendMode : isLongMode )
+		            {
+		                 isAtmStrategyCreated = false;
+				    	orderId = GetAtmStrategyUniqueId();
+				    	atmStrategyId = GetAtmStrategyUniqueId();
+				
+				    	AtmStrategyCreate(
+				        OrderAction.Buy,
+				        OrderType.Market, 0, 0, TimeInForce.Gtc,
+				        orderId, ATMStrategy, atmStrategyId,
+				        (atmCallbackErrorCode, atmCallBackId) =>
+				        {
+				            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+				            {
+				                isAtmStrategyCreated = true;
+				            }
+				        });
+		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
+						//resetButtons();
+		            }
+		
+		            if ( UseAskBid ? direction == "Down"  && /* isShortMode &&*/ isTrendMode: isShortMode )
+		            {
+		                isAtmStrategyCreated = false;
+				    	orderId = GetAtmStrategyUniqueId();
+				    	atmStrategyId = GetAtmStrategyUniqueId();
+				
+				    	AtmStrategyCreate(
+				        OrderAction.Sell,
+				        OrderType.Market, 0, 0, TimeInForce.Gtc,
+				        orderId, ATMStrategy, atmStrategyId,
+				        (atmCallbackErrorCode, atmCallBackId) =>
+				        {
+				            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+				            {
+				                isAtmStrategyCreated = true;
+				            }
+				        });
+		                Print($"[{Time[0]}] Entering Short Position (Auto Arm) ");
+						//resetButtons();
+		            }
+					
+					if(!UseAskBid)
+						return;
+					
+					if (direction == "Down"  && /*isShortMode &&*/ isRegressionMode )
+		            {
+		                 isAtmStrategyCreated = false;
+				    	orderId = GetAtmStrategyUniqueId();
+				    	atmStrategyId = GetAtmStrategyUniqueId();
+				
+				    	AtmStrategyCreate(
+				        OrderAction.Buy,
+				        OrderType.Market, 0, 0, TimeInForce.Gtc,
+				        orderId, ATMStrategy, atmStrategyId,
+				        (atmCallbackErrorCode, atmCallBackId) =>
+				        {
+				            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+				            {
+				                isAtmStrategyCreated = true;
+				            }
+				        });
+		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
+						//resetButtons();
+		            }
+					
+					if (direction == "Up"  && /*isLongMode &&*/ isRegressionMode)
+		            {
+		                 isAtmStrategyCreated = false;
+				    	orderId = GetAtmStrategyUniqueId();
+				    	atmStrategyId = GetAtmStrategyUniqueId();
+				
+				    	AtmStrategyCreate(
+				        OrderAction.Sell,
+				        OrderType.Market, 0, 0, TimeInForce.Gtc,
+				        orderId, ATMStrategy, atmStrategyId,
+				        (atmCallbackErrorCode, atmCallBackId) =>
+				        {
+				            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+				            {
+				                isAtmStrategyCreated = true;
+				            }
+				        });
+		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
+						//resetButtons();
+		            }
 	            }
-			 }
-            
-            previousCount = streaks.Count;
-			
+				referencePrice = currentPrice;
+				if(streakLines.Count() > numBars){
+					streakLines.RemoveAt(0);
+				}
+				
 			   // Manage ATM Strategies and Orders
             if (State == State.Realtime){
-	           if (!isAtmStrategyCreated )
+	           if (!isAtmStrategyCreated)
 					return;
 			
 				
@@ -322,10 +527,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 					else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat) 
 						atmStrategyId = string.Empty;
 			}
-            
+			
         }
 
- 
+		private void resetButtons()
+		{
+		    Dispatcher.Invoke(() =>
+	        {
+	            isLongMode = false;
+	            isShortMode = false;
+				isAutoArm = false;
+	            shortButton.Content = "Arm Short";
+	            longButton.Content = "Arm Long";
+				armButton.Content = "Auto Arm Off";
+				shortButton.Background = Brushes.Gray;
+				longButton.Background = Brushes.Gray;
+			});
+		}
 		
 		private void OnButtonClick(object sender, RoutedEventArgs e)
 		{
@@ -406,7 +624,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				modeButton.Content = "Regression";
 				modeButton.Background = Brushes.Teal;
 				Print("regression - " + isRegressionMode);
-    Print($"Mode changed: Regression mode activated, Trend mode deactivated");
+    			Print($"Mode changed: Regression mode activated, Trend mode deactivated");
 				
 		    }
 		    else if (buttonText == "Regression" && buttonName == "ModeButton" && button == modeButton)
@@ -415,20 +633,114 @@ namespace NinjaTrader.NinjaScript.Strategies
 				isTrendMode = true;
 				modeButton.Content = "Trend";
 				modeButton.Background = Brushes.Purple;
-    Print($"Mode changed: Trend mode activated, Regression mode deactivated");
+    			Print($"Mode changed: Trend mode activated, Regression mode deactivated");
 
 		    }
+			
+			
 		
 		    // Update the button content or perform any other necessary actions
 			
 		    
 		}
 		
+		  protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
+        {
+            base.OnRender(chartControl, chartScale);
+
+            if (streakLines == null || streakLines.Count == 0)
+                return;
+
+            foreach (var line in streakLines)
+            {
+                // Calculate bars ago
+                int barsAgo = CurrentBar - line.StartBar;
+                if (barsAgo < 0)
+                    continue; // Future bar, skip
+
+                // Get the pixel position for the start bar
+                float x = chartControl.GetXByBarIndex(ChartBars, line.StartBar);
+				//float x = chartControl.CanvasLeft;
+                if (float.IsNaN(x))
+                    continue; // Invalid X position
+
+                // Get the Y position for the price level
+                float y = chartScale.GetYByValue(line.PriceLevel);
+
+                // Define the end X position (right edge of the chart)
+                float endX = chartControl.CanvasRight;
+
+                // Create SharpDX brush (fully qualified to avoid ambiguity)
+                SharpDX.Direct2D1.Brush dxBrush = CreateDxBrush(line.Direction == "Up" ? LineColorUp : LineColorDown, RenderTarget);
+
+                // Draw the line using SharpDX.Vector2 fully qualified
+                RenderTarget.DrawLine(
+                    new SharpDX.Vector2(x, y),
+                    new SharpDX.Vector2(endX, y),
+                    dxBrush,
+                    LineThickness);
+
+                // Dispose the brush to free resources
+                dxBrush.Dispose();
+            }
+        }
+
+        #region Helper Classes
+
+        // Serialization helper for Brush
+        public static class Serialize
+        {
+            public static string BrushToString(System.Windows.Media.Brush brush)
+            {
+                if (brush is SolidColorBrush solidColorBrush)
+                {
+                    return solidColorBrush.Color.ToString();
+                }
+                return Brushes.Red.Color.ToString(); // Default
+            }
+
+            public static System.Windows.Media.Brush StringToBrush(string brushString)
+            {
+                try
+                {
+                    var color = (System.Windows.Media.Color)ColorConverter.ConvertFromString(brushString);
+                    return new SolidColorBrush(color);
+                }
+                catch
+                {
+                    return Brushes.Red; // Default
+                }
+            }
+        }
+
+        /// <summary>
+        /// Creates a SharpDX.Direct2D1.Brush from a System.Windows.Media.Brush
+        /// </summary>
+        /// <param name="brush">The WPF brush to convert.</param>
+        /// <param name="renderTarget">The render target to create the SharpDX brush.</param>
+        /// <returns>A SharpDX.Direct2D1.Brush.</returns>
+        private SharpDX.Direct2D1.Brush CreateDxBrush(System.Windows.Media.Brush brush, SharpDX.Direct2D1.RenderTarget renderTarget)
+        {
+            if (brush is SolidColorBrush solidColorBrush)
+            {
+                var color = solidColorBrush.Color;
+                // Convert System.Windows.Media.Color to SharpDX.Color
+                SharpDX.Color dxColor = new SharpDX.Color(color.R, color.G, color.B, color.A);
+                return new SharpDX.Direct2D1.SolidColorBrush(renderTarget, dxColor);
+            }
+            // Add more brush conversions if needed
+            // Default to red if not a SolidColorBrush
+            return new SharpDX.Direct2D1.SolidColorBrush(renderTarget, new SharpDX.Color(255, 0, 0, 255));
+        }
+
+        #endregion
+		
 		#region Properties
 		[NinjaScriptProperty]
 		[Display(Name="ATMStrategy", Order=1, GroupName="Parameters")]
 		public string ATMStrategy
 		{ get; set; }
+		
 		#endregion;
     }
 }

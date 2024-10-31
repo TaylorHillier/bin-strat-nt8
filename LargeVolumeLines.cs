@@ -12,6 +12,8 @@ using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Xml.Serialization;
+using System.Net.Http;
+using System.Web.Script.Serialization;
 using NinjaTrader.Cbi;
 using NinjaTrader.Gui;
 using NinjaTrader.Gui.Chart;
@@ -28,9 +30,59 @@ using System.IO;
 // This namespace holds Strategies in this folder and is required. Do not change it.
 namespace NinjaTrader.NinjaScript.Strategies
 {
+	
+	public class HttpClientWrapperLVL
+	{
+		private static readonly HttpClient client = new HttpClient();
+		private const string BaseUrl = "http://192.168.1.116:5000"; // Your server address
+		private static readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
+
+		public static Dictionary<string, object> Get(string endpoint)
+		{
+			HttpResponseMessage response = client.GetAsync($"{BaseUrl}/{endpoint}").Result;
+			response.EnsureSuccessStatusCode();
+			string responseBody = response.Content.ReadAsStringAsync().Result;
+			return serializer.Deserialize<Dictionary<string, object>>(responseBody);
+		}
+
+		public static Dictionary<string, object> Post(string endpoint, object data)
+		{
+			string json = serializer.Serialize(data);
+			HttpContent content = new StringContent(json, Encoding.UTF8, "application/json");
+			HttpResponseMessage response = client.PostAsync($"{BaseUrl}/{endpoint}", content).Result;
+			response.EnsureSuccessStatusCode();
+			string responseBody = response.Content.ReadAsStringAsync().Result;
+			return serializer.Deserialize<Dictionary<string, object>>(responseBody);
+		}
+	}
+		
+	public class SimTradeLVL
+	{
+		public double EntryPrice { get; set; }
+		public double Streak { get; set; }
+		public string Direction { get; set; }
+		public string Status { get; set; }
+		public double VolumeSpeed { get; set; }
+		public bool IsCompleted { get; set; }
+		
+		public double ADX { get; set; }
+		public double RSI { get; set; }
+	
+		public SimTradeLVL(double entryPrice, double streak, string direction, double volumeSpeed, double adx, double rsi)
+		{
+		    EntryPrice = entryPrice;
+			Streak = streak;
+			Direction = direction;
+			VolumeSpeed = volumeSpeed;
+			ADX = adx;
+			RSI = rsi;
+		}
+		
+	}
+	
     public class BayesianVolumeStreakStrategy : Strategy
     {
-			[Browsable(false)]
+		[Browsable(false)]
 		[XmlIgnore]
 		public List<StreakLine> StreakLines
 		{
@@ -119,6 +171,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Use Ask/Bid Sizes", Description = "Use Ask/Bid volumes over volume", Order = 4, GroupName = "Parameters")]
         public bool UseAskBid {get; set;}
         
+		[NinjaScriptProperty]
+        [Display(Name = "Collect Data for Model", Description = "Collect Data for model", Order = 2, GroupName = "Parameters")]
+        public bool CollectData {get; set;}
+		
+		
+		[NinjaScriptProperty]
+        [Display(Name = "Optimise w ML", Description = "Optimise w ML", Order = 2, GroupName = "Parameters")]
+        public bool Optimise {get; set;}
+		
         #endregion
 		
         private VolumeStreakLines volumeStreakLines;
@@ -281,8 +342,16 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
         }
 
+		double activeBar = -1;
         protected override void OnBarUpdate()
         {
+			
+			if(CurrentBar != activeBar && State == State.Realtime && Optimise){
+			
+				 WriteCurrentPredictiveValuesToServer();
+				   ReadOptimizedParamsFromServer();
+				activeBar = CurrentBar;
+			}
       
 			if(UseAskBid)
                 return;
@@ -331,88 +400,176 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double upVolume;
 		public double downVolume;
 		public string direction;
+		public double totalvolume;
 		double referencePrice = 0;
+		bool takeTrade = false;
+		double volumeSpeed;
+		double currentPrice;
+		DateTime lastTime;
+		double lastPrice;
         protected override void OnMarketData(MarketDataEventArgs e)
         {
             if(!UseAskBid)
                 return;
             // Ensure we have at least one bar
-            if (CurrentBar < 1)
+            if (CurrentBar < 5)
                 return;
 
-            double currentPrice = e.Price;
-			double askPrice = e.Ask;
-			double bidPrice = e.Bid;
-			double volume = e.Volume;
-			if(e.MarketDataType != MarketDataType.Last)
-				return;
+			if(CollectData){
+				UpdateSimTrades(18, 16);
 			
-	            if (Instrument.FullName.StartsWith("NQ") ? currentPrice <= previousPrice + 2 * TickSize || currentPrice >= previousPrice - 2 * TickSize : currentPrice == previousPrice)
+			}
+			
+         	volumeSpeed = Volume[0] + Volume[1] + Volume[2];
+			
+			direction = "na";	
+			
+				if(Close[0] > Open[0]){
+					direction = "Up";
+				}
+				else if(Close[0] < Open[0]){
+					direction = "Down";
+				}
+				
+				if(e.MarketDataType != MarketDataType.Last)
+					return;
+				currentPrice = e.Price;
+				double askPrice = e.Ask;
+				double bidPrice = e.Bid;
+				double volume = e.Volume;
+			
+				double lastMove;
+				if(currentPrice - lastPrice != 0){
+					lastMove = currentPrice - lastPrice;
+				}else {
+					lastMove = 0;
+				}
+			
+	            if (Instrument.FullName.StartsWith("NQ") ? currentPrice == previousPrice: currentPrice == previousPrice)
 	            {
 		
-					if(Instrument.FullName.StartsWith("NQ")){
-					}
 	                currentStreak+=e.Volume;
-					if(currentPrice > (bidPrice + askPrice) / 2){
-						upVolume += volume;
-						downVolume = 0;
-						//Print(upVolume + " up volume at " + currentPrice);
-					}
 					
-					if(currentPrice < (bidPrice + askPrice) / 2){
-						downVolume += volume;
-						upVolume = 0;
-						//Print(downVolume + " down volume at " + currentPrice);
-					}
-	            }
-	            if(Instrument.FullName.StartsWith("NQ")){
-					if(currentPrice > previousPrice + 2 * TickSize || currentPrice < previousPrice - 2 * TickSize)
-			            {
+						if(currentPrice > (bidPrice + askPrice) / 2){
+							upVolume  += volume;
+							totalvolume += volume;
+							//downVolume = 0;
+							//Print(upVolume + " up volume at " + currentPrice);
+						}
+						
+						if(currentPrice < (bidPrice + askPrice) / 2){
 							
+							downVolume += volume;
+							totalvolume += volume;
+							//upVolume = 0;
+							//Print(downVolume + " down volume at " + currentPrice);
+						}
+						if(currentPrice == (bidPrice + askPrice) / 2){
+							
+							if(lastMove > 0)
+							{
+								upVolume  += volume;
+							}
+							if(lastMove < 0)
+							{
+								downVolume  += volume;
+							}
+							
+							totalvolume += volume;
+						}
+						
+					
+						
+						 if (upVolume >= Threshold || downVolume >= Threshold)
+				            {
+								
+								takeTrade = true;
+								
+				
+								if(!takeTrade){
+								upVolume = 0;
+								downVolume = 0;
+								totalvolume = 0;
+								}
+								referencePrice = currentPrice;
+							}
+	            }
+	            if(Instrument.FullName.StartsWith("NQ"))
+				{
+					if(currentPrice > previousPrice + 0 * TickSize || currentPrice < previousPrice - 0 * TickSize)
+			            {
+					
+								
 			                currentStreak = 1;
+							
+							if(!takeTrade){
 							upVolume = 0;
 							downVolume = 0;
-							direction = "na";
+							totalvolume = 0;
 							previousPrice = currentPrice;
+							}
 							
 			            }
 						
-				}else 
+				}
+				else 
 				{
 					if(currentPrice != previousPrice )
-				     {
-							Print("hello");
+				    {
+							
 			                currentStreak = 1;
 							upVolume = 0;
 							downVolume = 0;
-							direction = "na";
+						
 							previousPrice = currentPrice;
 							
-			            }
+			         }
 				
 				}
-			
-					if(/*referencePrice < currentPrice &&*/ upVolume > downVolume){
-					direction = "Up";
-					}
-					else if(/*referencePrice > currentPrice  &&*/ upVolume < downVolume){
-						direction = "Down";
-					}
-	            if (upVolume == Threshold || downVolume == Threshold)
-	            {
-			
-	                int streakStartBar = CurrentBars[0] ;
+				
+				lastPrice = currentPrice;
+				if(takeTrade && direction != "na")
+				{
+					
+					int streakStartBar = CurrentBars[0] ;
 	                streakLines.Add(new StreakLine
 	                {
 	                    StartBar = streakStartBar,
-	                    PriceLevel = currentPrice,
+	                    PriceLevel = previousPrice,
 						Direction = direction
 	                });
 					
-						if (orderId.Length > 0 || atmStrategyId.Length > 0 || State != State.Realtime)
+				
+					
+					if(State == State.Historical && CollectData)
+					{
+						
+						SimTradeLVL newTrade = new SimTradeLVL(
+					        currentPrice,
+							upVolume > downVolume ? upVolume : downVolume,
+							direction,
+							volumeSpeed,
+							ADX(14)[0],
+							RSI(14,2)[0]
+					    );
+				
+					    simTrades.Add(newTrade);
+						
+					}
+					
+						
+					if(takeTrade ){
+						upVolume = 0;
+						downVolume = 0;
+						totalvolume = 0;
+						takeTrade = false;
+					}
+					
+					
+					if (orderId.Length > 0 || atmStrategyId.Length > 0 || State != State.Realtime)
 		        	return;
 						 
-		            if (UseAskBid ? direction == "Up"  && /*isLongMode &&*/ isTrendMode : isLongMode )
+		            if (UseAskBid ? direction == "Up" && isTrendMode && isLongMode : isLongMode )
 		            {
 		                 isAtmStrategyCreated = false;
 				    	orderId = GetAtmStrategyUniqueId();
@@ -430,10 +587,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 				            }
 				        });
 		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
-						//resetButtons();
+						resetButtons();
+						
 		            }
 		
-		            if ( UseAskBid ? direction == "Down"  && /* isShortMode &&*/ isTrendMode: isShortMode )
+		            if ( UseAskBid ? direction == "Down"  && isTrendMode &&  isShortMode  : isShortMode )
 		            {
 		                isAtmStrategyCreated = false;
 				    	orderId = GetAtmStrategyUniqueId();
@@ -451,13 +609,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 				            }
 				        });
 		                Print($"[{Time[0]}] Entering Short Position (Auto Arm) ");
-						//resetButtons();
+						resetButtons();
+						
 		            }
 					
 					if(!UseAskBid)
 						return;
 					
-					if (direction == "Down"  && /*isShortMode &&*/ isRegressionMode )
+					if (direction == "Down"  && isShortMode && isRegressionMode )
 		            {
 		                 isAtmStrategyCreated = false;
 				    	orderId = GetAtmStrategyUniqueId();
@@ -475,10 +634,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 				            }
 				        });
 		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
-						//resetButtons();
+						resetButtons();
+						
 		            }
 					
-					if (direction == "Up"  && /*isLongMode &&*/ isRegressionMode)
+					if (direction == "Up"  && isLongMode && isRegressionMode )
 		            {
 		                 isAtmStrategyCreated = false;
 				    	orderId = GetAtmStrategyUniqueId();
@@ -496,10 +656,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 				            }
 				        });
 		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
-						//resetButtons();
+						resetButtons();
+						
 		            }
+					
 	            }
-				referencePrice = currentPrice;
+				
+				
+				
 				if(streakLines.Count() > numBars){
 					streakLines.RemoveAt(0);
 				}
@@ -529,6 +693,163 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 			
         }
+		
+			private void UpdateTradeStatus(SimTradeLVL trade, string status)
+			{
+			    trade.Status = status;
+				
+			    trade.IsCompleted = true;
+		
+				WriteTradesToCsv();
+			}
+		
+		private void UpdateSimTrades(double target, double stopLoss)
+		{
+		    foreach (SimTradeLVL trade in simTrades.Where(t => t.Status == null))
+		    {
+		        double entryPrice = trade.EntryPrice;
+		        string positionType = trade.Direction;
+		
+		        if (trade.Direction == "Up")
+		        {
+		            if (currentPrice >= entryPrice + (target * TickSize))
+		            {
+		                UpdateTradeStatus(trade, "Target Hit");
+		            }
+		            else if (currentPrice <= entryPrice - (stopLoss * TickSize))
+		            {
+		                UpdateTradeStatus(trade, "Stop Loss Hit");
+		            }
+		        }
+		        else if (trade.Direction == "Down")
+		        {
+		            if (currentPrice <= entryPrice - (target * TickSize))
+		            {
+		                UpdateTradeStatus(trade, "Target Hit");
+		            }
+		            else if (currentPrice >= entryPrice + (stopLoss * TickSize))
+		            {
+		                UpdateTradeStatus(trade, "Stop Loss Hit");
+		            }
+		        }
+		    }
+			
+			
+		
+		    simTrades.RemoveAll(trade => trade.IsCompleted);
+		}
+		
+		private List<SimTradeLVL> simTrades = new List<SimTradeLVL>();
+		
+			private void WriteTradesToCsv()
+			{
+			    string filePath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\train_model.csv" ;
+			
+			    if (string.IsNullOrEmpty(filePath)) return;
+			
+			    try
+			    {
+			        string directory = Path.GetDirectoryName(filePath);
+			        if (!Directory.Exists(directory))
+			        {
+			            Directory.CreateDirectory(directory);
+			        }
+			
+			        bool fileExists = File.Exists(filePath);
+			        bool headerExists = false;
+			
+			        if (fileExists)
+			        {
+			            // Check if the header exists
+			            string firstLine = File.ReadLines(filePath).FirstOrDefault();
+			            headerExists = firstLine != null && firstLine.StartsWith("Streak,Status,Volume,ADX,RSI");
+			        }
+			
+			        using (StreamWriter writer = new StreamWriter(filePath, append: true))
+			        {
+			            if (!headerExists)
+			            {
+			                writer.WriteLine("Streak,Status,Volume,ADX,RSI");
+			            }
+			
+			            StringBuilder sb = new StringBuilder();
+			            foreach (var trade in simTrades.Where(t => t.IsCompleted))
+			            {
+					
+			                    sb.AppendFormat("{0},{1},{2},{3},{4}\n",
+			                        Math.Round(trade.Streak, 2),
+			                        trade.Status,
+			                        trade.VolumeSpeed,
+									trade.ADX,
+									trade.RSI
+			                    );
+			            
+			            }
+			            writer.Write(sb.ToString());
+			        }
+			      
+			    }
+			    catch (Exception ex)
+			    {
+			        Print($"Error writing to CSV: {ex.Message}");
+			    }
+			}
+
+	
+			private void WriteCurrentPredictiveValuesToServer()
+			{
+				var predictiveValues = new
+				{
+					Volume = volumeSpeed,
+					ADX = ADX(14)[0],
+					RSI = RSI(14,2)[0]
+				};
+				
+				try
+				{
+					HttpClientWrapperLVL.Post("current_predictive_values", predictiveValues);
+				}
+				catch (Exception ex)
+				{
+					Print($"Error updating current predictive values: {ex.Message}");
+				}
+			}
+
+		private void ReadOptimizedParamsFromServer()
+		{
+		    try
+		    {
+		        // Attempt to retrieve optimized parameters
+		        var optimizedParams = HttpClientWrapperLVL.Get("optimized_params");
+		
+		        if (optimizedParams == null)
+		        {
+		            Print("Failed to retrieve response from server.");
+		            return;
+		        }
+		
+		        // Check if expected key "Streak" exists in the response
+		        if (optimizedParams.TryGetValue("Streak", out object streakValue))
+		        {
+		            int newThreshold = Convert.ToInt32(streakValue);
+		            Threshold = newThreshold;
+		            Print($"Updated Threshold: {Threshold}");
+		        }
+		        else
+		        {
+		            Print("Key 'Streak' not found in response.");
+		        }
+		    }
+		    catch (HttpRequestException ex)
+		    {
+		        Print($"HTTP error reading optimized parameters from server: {ex.Message}");
+		    }
+		    catch (Exception ex)
+		    {
+		        Print($"Error reading optimized parameters from server: {ex.Message}");
+		    }
+		}
+
 
 		private void resetButtons()
 		{

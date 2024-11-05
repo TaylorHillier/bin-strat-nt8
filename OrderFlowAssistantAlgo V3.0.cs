@@ -1391,7 +1391,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        isSellImbalance = cumulativeSells > cumulativeBuys;
 		    }
 
-		        if (isLongMode  && isTrendMode && p_h1_d > 0.70)
+		        if (isLongMode  && isBuyImbalance && isTrendMode && p_h1_d > 0.70)
 		        {
 		              
 		        tradeTaken = true;
@@ -1415,7 +1415,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		         //Print($"Trend mode: Long signal detected with probability {trendLongProb:F2}");
 		            
 		        }
-		        if (isShortMode  && isTrendMode && p_h0_d > 0.70 )
+		        if (isShortMode  && isTrendMode  && isSellImbalance && p_h0_d > 0.70 )
 		        {
 		           
 		               

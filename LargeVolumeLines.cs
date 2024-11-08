@@ -135,14 +135,21 @@ namespace NinjaTrader.NinjaScript.Strategies
             public int StartBar { get; set; }
             public double PriceLevel { get; set; }
 			public string Direction { get; set; }
+			public bool HasCrossed { get; set; }
+			public int EndBar { get; set; }
         }
 
         #endregion
 
         #region Properties
 
+		[NinjaScriptProperty]
+		[Display(Name="ATMStrategy", Order=1, GroupName="Parameters")]
+		public string ATMStrategy
+		{ get; set; }
+		
         [Range(1, int.MaxValue), NinjaScriptProperty]
-        [Display(Name = "Threshold", Description = "Minimum number of consecutive bars at a price level to trigger a line.", Order = 1, GroupName = "Parameters")]
+        [Display(Name = "Threshold", Description = "Minimum number of consecutive bars at a price level to trigger a line.", Order = 2, GroupName = "Parameters")]
         public int Threshold
         {
             get { return threshold; }
@@ -150,20 +157,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 		
 		[Range(1, int.MaxValue), NinjaScriptProperty]
-        [Display(Name = "Number of Bars to Show", Description = "Number of Lines to Show.", Order = 2, GroupName = "Parameters")]
+        [Display(Name = "Number of Bars to Show", Description = "Number of Lines to Show.", Order = 3, GroupName = "Personalization")]
         public int numBars
        	{ get; set;}
-		
-        [XmlIgnore]
-        [Display(Name = "Line Color", Description = "Color of the streak lines.", Order = 3, GroupName = "Parameters")]
-        public Brush LineColor
-        {
-            get { return lineBrush; }
-            set { lineBrush = value; }
-        }
-		
+
 		[XmlIgnore]
-        [Display(Name = "Line Color Up", Description = "Color of the streak lines.", Order = 3, GroupName = "Parameters")]
+        [Display(Name = "Line Color Up", Description = "Color of the streak lines.", Order = 5, GroupName = "Personalization")]
         public Brush LineColorUp
         {
             get { return lineBrushUp; }
@@ -171,7 +170,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 		
 		[XmlIgnore]
-        [Display(Name = "Line Color Down", Description = "Color of the streak lines.", Order = 3, GroupName = "Parameters")]
+        [Display(Name = "Line Color Down", Description = "Color of the streak lines.", Order = 6, GroupName = "Personalization")]
         public Brush LineColorDown
         {
             get { return lineBrushDown; }
@@ -186,7 +185,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         [Range(1f, 5f), NinjaScriptProperty]
-        [Display(Name = "Line Thickness", Description = "Thickness of the streak lines.", Order = 4, GroupName = "Parameters")]
+        [Display(Name = "Line Thickness", Description = "Thickness of the streak lines.", Order = 7, GroupName = "Personalization")]
         public float LineThickness
         {
             get { return lineThickness; }
@@ -196,15 +195,30 @@ namespace NinjaTrader.NinjaScript.Strategies
         [ NinjaScriptProperty]
         [Display(Name = "Use Ask/Bid Sizes", Description = "Use Ask/Bid volumes over volume", Order = 4, GroupName = "Parameters")]
         public bool UseAskBid {get; set;}
-        
+		
 		[NinjaScriptProperty]
-        [Display(Name = "Collect Data for Model", Description = "Collect Data for model", Order = 2, GroupName = "Parameters")]
+        [Display(Name = "Collect Data for Model", Description = "Collect Data for model", Order = 8, GroupName = "Machine Learning")]
         public bool CollectData {get; set;}
 		
 		
 		[NinjaScriptProperty]
-        [Display(Name = "Optimise w ML", Description = "Optimise w ML", Order = 2, GroupName = "Parameters")]
+        [Display(Name = "Optimise w ML", Description = "Optimise w ML", Order = 9, GroupName = "Machine Learning")]
         public bool Optimise {get; set;}
+		
+		
+		[Range(0, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Limit order offset", Description = "distance from signal to take trade", Order = 1, GroupName = "Order Handling")]
+        public int limitOrderOffset
+       	{ get; set;}
+		
+		[Range(0, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Profit Target for Lines and ML", Description = "Profit Target for Lines and ML", Order = 3, GroupName = "Order Handling")]
+        public double profitTarget
+       	{ get; set;}
+		
+		[NinjaScriptProperty]
+        [Display(Name = "Use Limit Orders", Description = "Use Limit Orders", Order = 2, GroupName = "Order Handling")]
+        public bool UseLimit {get; set;}
 		
         #endregion
 		
@@ -245,7 +259,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				   // Default parameters
                 Threshold = 3;
-				LineColor = Brushes.Red;
                 LineColorUp = Brushes.Green;
 				LineColorDown = Brushes.Red;
                 LineThickness = 2f;
@@ -372,27 +385,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 		double activeBar = -1;
         protected override void OnBarUpdate()
         {
-			
-			bool priceIncreased = Close[0] >= lastClose + ( 20* TickSize);
-			
-			if (Close[0] >= (lastClose + (20 * TickSize)) || (Close[0] <= (lastClose  - (20 * TickSize))))
-            {
-                // Update historical data
-                UpdateHistoricalData(priceIncreased);
-				lastClose = Close[0];
-            }
-						
-                // Compute posterior probabilities
-             double itotal = ComputeImbalance();
+				
+			if(CurrentBar > 1){
              var posteriors = CalculatePosteriors();
 
-                p_h1_d = posteriors.Item1;
-                p_h0_d = posteriors.Item2;
+            p_h1_d = posteriors.Item1;
+            p_h0_d = posteriors.Item2;
+			}
 			
 			if(CurrentBar != activeBar && State == State.Realtime && Optimise){
 			
-				 WriteCurrentPredictiveValuesToServer();
-				   ReadOptimizedParamsFromServer();
+				WriteCurrentPredictiveValuesToServer();
+				ReadOptimizedParamsFromServer();
 				activeBar = CurrentBar;
 			}
       
@@ -474,6 +478,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		double avg_p_h1_d;
 		double avg_p_h0_d;
 		
+		bool checkDirection = false;
+		
         protected override void OnMarketData(MarketDataEventArgs e)
         {
             if(!UseAskBid)
@@ -485,8 +491,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if(CollectData){
 				UpdateSimTrades(18, 16);
 			}
-			
-			
 			
          	volumeSpeed = Volume[0] + Volume[1] + Volume[2];
 			
@@ -518,6 +522,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        avg_p_h0_d = sum_p_h0_d / probabilityChangeQueue.Count;
 				
 				if(e.MarketDataType == MarketDataType.Last){
+					if(previousPrice == 0){
+						previousPrice = e.Price;
+					}
+						
 					// Initialize score changes
 					currentPrice = e.Price;
 			        int scoreChange = 0;
@@ -575,95 +583,108 @@ namespace NinjaTrader.NinjaScript.Strategies
 //			        Print($"Current Score: {currentScore}");
 //			        Print($"Current ScoreUp: {currentScoreUp}");
 //			        Print($"Current ScoreDown: {currentScoreDown}");
-			            
-				}
 		
-				double lastMove;
-				if(currentPrice - lastPrice != 0){
-					lastMove = currentPrice - lastPrice;
-				}else {
-					lastMove = 0;
-				}
+					double lastMove;
+					if(currentPrice - lastPrice != 0){
+						lastMove = currentPrice - lastPrice;
+					}else {
+						lastMove = 0;
+					}
 			
-				if(e.MarketDataType == MarketDataType.Last){
-					
 					if(Instrument.FullName.StartsWith("NQ"))
 					{
 						
-						if(e.Price > previousPrice + 2 * TickSize || e.Price < previousPrice - 2 * TickSize)
-			            {
-							upVolume = 0;
-							downVolume = 0;
-							totalvolume = 0;
-							previousPrice = e.Price;
-			            }
-			
-						if(e.Price > (e.Bid +  e.Ask) / 2){
-							upVolume  += e.Volume;
-							downVolume = 0;
-							//Print(upVolume + " up volume at " + currentPrice);
-						}
-						
-						else if(e.Price < (e.Bid +  e.Ask) / 2){
-							
-							downVolume += e.Volume;
-							upVolume = 0;
-							//Print(downVolume + " down volume at " + currentPrice);
-						}
-						else if(e.Price == (e.Bid + e.Ask) / 2){
-							
-							if(lastMove > 0)
-							{
+							if(e.Price > previousPrice + 8 * TickSize || e.Price <  previousPrice - 8 * TickSize)
+				            {
+								upVolume = 0;
+								downVolume = 0;
+								totalvolume = 0;
+								previousPrice = e.Price;
+				            }
+							else if((e.Price <= previousPrice + 0 * TickSize || e.Price >=  previousPrice - 0 * TickSize) && e.Price == previousPrice)
+								
+							if(e.Price > (e.Ask + e.Bid) / 2 ){
 								upVolume  += e.Volume;
+//								downVolume = 0;
+								//Print(upVolume + " up volume at " + currentPrice);
 							}
-							if(lastMove < 0)
-							{
-								downVolume  += e.Volume;
+							else if(e.Price <  (e.Ask + e.Bid) / 2 ){
+								downVolume += e.Volume;
+//								upVolume = 0;
+								//Print(downVolume + " down volume at " + currentPrice);
+							} else if(e.Price ==  (e.Ask + e.Bid) / 2 ){
+								if(lastMove > 0){
+									upVolume += e.Volume;
+//									downVolume = 0;
+								} else if(lastMove < 0){
+									downVolume += e.Volume;
+//									upVolume = 0;
+								}
 							}
-							
-						}
 						
-						totalvolume += e.Volume;
+							totalvolume += e.Volume;
 						
 						 if (upVolume >= Threshold || downVolume >=Threshold)
 				         {
+							 
 								
 							takeTrade = true;
-					
+							checkDirection = true;
 							referencePrice = currentPrice;
+							 Print($"Threshold met - UpVolume: {upVolume}, DownVolume: {downVolume}, CurrentPrice: {currentPrice}, Previous Price: {previousPrice}");
 						}
-					}
+//					}
 				
 	            }
 				
-				if (avg_p_h1_d > 0.6)
+				if (e.Price > EMA(20)[0])
 		        {
 		            direction = "Up";
+				
 		        }
-		        else if (avg_p_h0_d > 0.6)
+		        else if (e.Price < EMA(20)[0])
 		        {
 		            direction = "Down";
+			
 		        }
+		
+				if(checkDirection){
+					bool priceIncreased = Close[0] >= lastClose + profitTarget * TickSize;
+			
+					if ((Close[0] > lastClose + profitTarget * TickSize || Close[0] < lastClose - profitTarget * TickSize))
+		            {
+		                // Update historical data
+		                UpdateHistoricalData(priceIncreased);
+						lastClose = Close[0];
+						checkDirection = false;
+		            }
+				}
 				
+				if(streakLines.Count != 0){
+					foreach(var line in streakLines){
 						
-//				Print($"Current Score: {currentScore}");
-//		        Print($"Current ScoreUp: {currentScoreUp}");
-//		        Print($"Current ScoreDown: {currentScoreDown}");
-//		        Print($"Avg p_h1_d: {avg_p_h1_d:F4}");
-//		        Print($"Avg p_h0_d: {avg_p_h0_d:F4}");
-//		        Print($"Direction: {direction}");
-
-				lastPrice = e.Price;
-				
-				if(takeTrade && direction != "na"  )
+						if(line.Direction == "Up" && e.Price < line.PriceLevel - profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed){
+							line.HasCrossed = true;
+							line.EndBar = CurrentBars[0] ;
+						}
+						
+						if(line.Direction == "Down" && e.Price > line.PriceLevel + profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed){
+							line.HasCrossed = true;
+							line.EndBar = CurrentBars[0] ;
+						}
+						
+					}
+				}
+				if(takeTrade && direction != "na")
 				{
 
 					int streakStartBar = CurrentBars[0] ;
 	                streakLines.Add(new StreakLine
 	                {
 	                    StartBar = streakStartBar,
-	                    PriceLevel =  e.Price,
-						Direction = direction
+	                    PriceLevel =  referencePrice,
+						Direction = direction,
+						HasCrossed = false
 	                });
 					
 				
@@ -704,7 +725,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				    	AtmStrategyCreate(
 				        OrderAction.Buy,
-				        OrderType.Limit, currentPrice , 0, TimeInForce.Gtc,
+				         UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ?  previousPrice - limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
 				        orderId, ATMStrategy, atmStrategyId,
 				        (atmCallbackErrorCode, atmCallBackId) =>
 				        {
@@ -730,7 +751,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				    	AtmStrategyCreate(
 				        OrderAction.Sell,
-				        OrderType.Limit,currentPrice,0, TimeInForce.Gtc,
+				         UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ?  previousPrice + limitOrderOffset * TickSize : 0,0, TimeInForce.Gtc,
 				        orderId, ATMStrategy, atmStrategyId,
 				        (atmCallbackErrorCode, atmCallBackId) =>
 				        {
@@ -758,7 +779,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				    	AtmStrategyCreate(
 				        OrderAction.Buy,
-				        OrderType.Limit, currentPrice, 0, TimeInForce.Gtc,
+				        UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ?  previousPrice - limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
 				        orderId, ATMStrategy, atmStrategyId,
 				        (atmCallbackErrorCode, atmCallBackId) =>
 				        {
@@ -784,7 +805,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				    	AtmStrategyCreate(
 				        OrderAction.Sell,
-				        OrderType.Limit, currentPrice , 0, TimeInForce.Gtc,
+				        UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ?  previousPrice + limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
 				        orderId, ATMStrategy, atmStrategyId,
 				        (atmCallbackErrorCode, atmCallBackId) =>
 				        {
@@ -808,6 +829,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				if(streakLines.Count() > numBars){
 					streakLines.RemoveAt(0);
+				}
 				}
 				
 			   // Manage ATM Strategies and Orders
@@ -833,8 +855,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 					else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat) 
 						atmStrategyId = string.Empty;
 					
-					if(atmStrategyId.Length > 0 && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat && (Close[0] >  referencePrice + 18 * TickSize || atmStrategyId.Length > 0 && Close[0] <  referencePrice - 18 * TickSize)){
-						   AtmStrategyClose(atmStrategyId);
+					if(UseLimit){
+						if(atmStrategyId.Length > 0 && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat && (e.Price >  referencePrice + 12 * TickSize ||  e.Price <  referencePrice - 12 * TickSize)){
+							   AtmStrategyClose(atmStrategyId);
+						}
 					}
 			}
 			
@@ -1134,12 +1158,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    float metricsY = 10;
 			
 			
-			 RenderTarget.DrawText($"Long Probability: {avg_p_h1_d:F3}", metricsFormat, 
+			 RenderTarget.DrawText($"Long Probability: {p_h1_d:F3}", metricsFormat, 
 		        new SharpDX.RectangleF(metricsX, metricsY, 200, 20), 
 		        textBrush);
 			
 			
-			 RenderTarget.DrawText($"Short Probability: {avg_p_h0_d:F3}", metricsFormat, 
+			 RenderTarget.DrawText($"Short Probability: {p_h0_d:F3}", metricsFormat, 
 		        new SharpDX.RectangleF(metricsX, metricsY + 20, 200, 20), 
 		        textBrush);
 			
@@ -1166,8 +1190,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Get the Y position for the price level
                 float y = chartScale.GetYByValue(line.PriceLevel);
 
-                // Define the end X position (right edge of the chart)
-                float endX = chartControl.CanvasRight;
+				 float endX = chartControl.CanvasRight;
+				
+				if(line.HasCrossed == true){
+					endX = chartControl.GetXByBarIndex(ChartBars, line.EndBar);
+				}
+			
 
                 // Create SharpDX brush (fully qualified to avoid ambiguity)
                 SharpDX.Direct2D1.Brush dxBrush = CreateDxBrush(line.Direction == "Up" ? LineColorUp : LineColorDown, RenderTarget);
@@ -1177,7 +1205,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     new SharpDX.Vector2(x, y),
                     new SharpDX.Vector2(endX, y),
                     dxBrush,
-                    LineThickness);
+                    line.HasCrossed ? LineThickness * 3 : LineThickness);
 
                 // Dispose the brush to free resources
                 dxBrush.Dispose();
@@ -1239,16 +1267,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #endregion
 		
-		#region Properties
-		[NinjaScriptProperty]
-		[Display(Name="ATMStrategy", Order=1, GroupName="Parameters")]
-		public string ATMStrategy
-		{ get; set; }
-		
-		#endregion;
-		
-		private List<int> observationSequence = new List<int>();
-		private int maxSequenceLength = 2000; // Adjust as needed
+		private int maxSequenceLength = 1000; // Adjust as needed
 		
 		private List<double> historicalAskVolumes = new List<double>();  // List to store historical ask volumes
 		private List<double> historicalBidVolumes = new List<double>();  // List to store historical bid volumes
@@ -1272,26 +1291,24 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		private void UpdateHistoricalData(bool priceIncreased)
 		{
-	
 		    // Calculate technical indicators
-		    double rsi = RSI(14, 3)[0];
-		    double adx = ADX(14)[0];
-		    double macd = MACD(12, 26, 9).Diff[0];
-		
+		    double rsi = RSI(5, 3)[0] - RSI(5, 3)[1];
+		    double adx =  ADX(5)[0] - ADX(5)[1];
+		    double macd = MACD(12, 26, 9).Diff[0] - MACD(12, 26, 9).Diff[1];
+
 		    // Calculate volume imbalance
 		    double totalBidVolume = upVolume;
 		    double totalAskVolume = downVolume;
-
+		
 		    // Add the observation, ask, bid volumes, and technical indicators to observationData
 		    int observation = priceIncreased ? 1 : 0;
 		    observationData.Add((observation, totalAskVolume, totalBidVolume, rsi, adx, macd));
 		
-		    // Update historical data based on price movement
+		    // Update historical data based on price movement 
 		    if (priceIncreased)
 		    {
-			
 		        historicalAskIncreases.Add(totalAskVolume);
-				historicalBidIncreases.Add(totalBidVolume);
+		        historicalBidIncreases.Add(totalBidVolume);
 		        historicalRsiIncreases.Add(rsi);
 		        historicalAdxIncreases.Add(adx);
 		        historicalMacdIncreases.Add(macd);
@@ -1299,7 +1316,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    else
 		    {
 		        historicalAskDecreases.Add(totalAskVolume);
-				historicalBidDecreases.Add(totalBidVolume);
+		        historicalBidDecreases.Add(totalBidVolume);
 		        historicalRsiDecreases.Add(rsi);
 		        historicalAdxDecreases.Add(adx);
 		        historicalMacdDecreases.Add(macd);
@@ -1307,37 +1324,37 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		    // Maintain the maximum sequence length
 		    if (observationData.Count > maxSequenceLength)
+		    {
+		        // Remove the oldest observation
+		        var oldestObservation = observationData[0];
 		        observationData.RemoveAt(0);
 		
-		    if (historicalAskDecreases.Count > maxSequenceLength)
-		        historicalAskDecreases.RemoveAt(0);
-		    if (historicalAskIncreases.Count > maxSequenceLength)
-		        historicalAskIncreases.RemoveAt(0);
-			
-			if (historicalBidIncreases.Count > maxSequenceLength)
-		        historicalBidIncreases.RemoveAt(0);
-		    if (historicalBidDecreases.Count > maxSequenceLength)
-		        historicalBidDecreases.RemoveAt(0);
+		        bool wasPriceIncrease = oldestObservation.Observation == 1;
 		
-		    if (historicalRsiIncreases.Count > maxSequenceLength)
-		        historicalRsiIncreases.RemoveAt(0);
-		    if (historicalRsiDecreases.Count > maxSequenceLength)
-		        historicalRsiDecreases.RemoveAt(0);
-		
-		    if (historicalAdxIncreases.Count > maxSequenceLength)
-		        historicalAdxIncreases.RemoveAt(0);
-		    if (historicalAdxDecreases.Count > maxSequenceLength)
-		        historicalAdxDecreases.RemoveAt(0);
-		
-		    if (historicalMacdIncreases.Count > maxSequenceLength)
-		        historicalMacdIncreases.RemoveAt(0);
-		    if (historicalMacdDecreases.Count > maxSequenceLength)
-		        historicalMacdDecreases.RemoveAt(0);
-		
+		        if (wasPriceIncrease)
+		        {
+		            // Remove data from increases lists
+		            historicalAskIncreases.RemoveAt(0);
+		            historicalBidIncreases.RemoveAt(0);
+		            historicalRsiIncreases.RemoveAt(0);
+		            historicalAdxIncreases.RemoveAt(0);
+		            historicalMacdIncreases.RemoveAt(0);
+		        }
+		        else
+		        {
+		            // Remove data from decreases lists
+		            historicalAskDecreases.RemoveAt(0);
+		            historicalBidDecreases.RemoveAt(0);
+		            historicalRsiDecreases.RemoveAt(0);
+		            historicalAdxDecreases.RemoveAt(0);
+		            historicalMacdDecreases.RemoveAt(0);
+		        }
+		    }
 		
 		    // Recalculate statistical parameters and Bayesian priors
 		    RecalculateStatistics();
 		}
+		
 
 		private void RecalculateStatistics()
 		{
@@ -1419,43 +1436,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		    if (totalEvents == 0)
 		    {
-		        // Avoid division by zero; assign equal priors
 		        priorPriceIncrease = 0.5;
 		        priorPriceDecrease = 0.5;
-				 // Optionally, log the updated priors for debugging
-		   
 		    }
 		    else
 		    {
 		        priorPriceIncrease = (double)historicalAskIncreases.Count / totalEvents;
 		        priorPriceDecrease = (double)historicalAskDecreases.Count / totalEvents;
-		
-		        // Ensure that priors sum to 1
-		        double sum = priorPriceIncrease + priorPriceDecrease;
-		        if (sum != 1.0)
-		        {
-		            priorPriceIncrease /= sum;
-		            priorPriceDecrease /= sum;
-		        }
-					 // Optionally, log the updated priors for debugging
-		   // Print($"[{Time[0]}] Updated Priors -> P(H=1): {priorPriceIncrease}, P(H=0): {priorPriceDecrease}");
-				
 		    }
 		
-		   
+		    // No need to normalize priors here as they will naturally sum to 1
 		}
-
-        /// <summary>
-        /// Computes the total imbalance Itotal by summing (BidVolume - AskVolume) across all price levels.
-        /// </summary>
-        /// <returns>Total Imbalance (Itotal)</returns>
-        private double ComputeImbalance()
-        {
-            double itotal = 0;
-          itotal = upVolume - downVolume;
-
-            return itotal;
-        }
 
 		/// <summary>
 		/// Calculates the posterior probabilities P(H=1|D) and P(H=0|D) using Bayes' Theorem, incorporating technical indicators.
@@ -1480,21 +1471,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		
 		    // Incorporate RSI into the likelihood calculation
-		    double rsi = RSI(5, 3)[0];
+		    double rsi = RSI(5, 3)[0] - RSI(5, 3)[1];
 		    double p_rsi_h1 = GaussianPDF(rsi, muRsiIncrease, sigmaRsiIncrease);
 		    double p_rsi_h0 = GaussianPDF(rsi, muRsiDecrease, sigmaRsiDecrease);
 		    p_d_h1 *= p_rsi_h1; // P(D|H=1) *= P(RSI|H=1)
 		    p_d_h0 *= p_rsi_h0; // P(D|H=0) *= P(RSI|H=0)
 		
 		    // Incorporate ADX into the likelihood calculation
-		    double adx = ADX(5)[0];
+		    double adx = ADX(5)[0] - ADX(5)[1];
 		    double p_adx_h1 = GaussianPDF(adx, muAdxIncrease, sigmaAdxIncrease);
 		    double p_adx_h0 = GaussianPDF(adx, muAdxDecrease, sigmaAdxDecrease);
 		    p_d_h1 *= p_adx_h1; // P(D|H=1) *= P(ADX|H=1)
 		    p_d_h0 *= p_adx_h0; // P(D|H=0) *= P(ADX|H=0)
 		
 		    // Incorporate MACD into the likelihood calculation
-		    double macd = MACD(12, 26, 9).Diff[0];
+		    double macd = MACD(12, 26, 9).Diff[0] - MACD(12, 26, 9).Diff[1];
 		    double p_macd_h1 = GaussianPDF(macd, muMacdIncrease, sigmaMacdIncrease);
 		    double p_macd_h0 = GaussianPDF(macd, muMacdDecrease, sigmaMacdDecrease);
 		    p_d_h1 *= p_macd_h1; // P(D|H=1) *= P(MACD|H=1)
@@ -1507,7 +1498,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    // Handle zero marginal likelihood
 		    if (p_d == 0)
 		    {
-		        Print("[DEBUG] Marginal Likelihood is zero, returning neutral priors.");
+		        //Print("[DEBUG] Marginal Likelihood is zero, returning neutral priors.");
 		        return (0.5, 0.5);  // Neutral priors when likelihood is zero
 		    }
 		
@@ -1527,71 +1518,71 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 
 
-/// <summary>
-/// Calculates the probability density of a value x for a Gaussian distribution.
-/// </summary>
-/// <param name="x">Value</param>
-/// <param name="mu">Mean</param>
-/// <param name="sigma">Standard Deviation</param>
-/// <returns>Probability density P(x)</returns>
-private double GaussianPDF(double x, double mu, double sigma)
-{
-    if (sigma <= 0)
-    {
-       
-        return 0;
-    }
-    double exponent = -Math.Pow(x - mu, 2) / (2 * Math.Pow(sigma, 2));
-    double pdf = (1 / (Math.Sqrt(2 * Math.PI) * sigma)) * Math.Exp(exponent);
-    
- 
-    
-    return pdf;
-}
-
-// With these lists
-		private List<double> historicalIncreases = new List<double>();
-		private List<double> historicalDecreases = new List<double>();
-		
-        // Bayesian parameters
-        double priorPriceIncrease = 0.5; // P(H=1)
-        double priorPriceDecrease = 0.5; // P(H=0)
-
-        // Statistical parameters for likelihoods
-        private double muIncrease = 0;
-        private double sigmaIncrease = 1;
-        private double muDecrease = 0;
-        private double sigmaDecrease = 1;
-		
-		  private double muAskIncrease;
-        private double sigmaAskIncrease;
-        private double muAskDecrease;
-        private double sigmaAskDecrease;
-		
-		  private double muBidIncrease;
-        private double sigmaBidIncrease;
-        private double muBidDecrease;
-        private double sigmaBidDecrease;
-		
-		private double muRsiIncrease;
-		private double sigmaRsiIncrease;
-		private double muRsiDecrease;
-		private double sigmaRsiDecrease;
-		
-		private double muAdxIncrease;
-		private double sigmaAdxIncrease;
-		private double muAdxDecrease;
-		private double sigmaAdxDecrease;
-		
-		private double muMacdIncrease;
-		private double sigmaMacdIncrease;
-		private double muMacdDecrease;
-		private double sigmaMacdDecrease;
-		
-		double lastClose = 0;
-		
-		double p_h1_d;
-		double p_h0_d;
-    }
+	/// <summary>
+	/// Calculates the probability density of a value x for a Gaussian distribution.
+	/// </summary>
+	/// <param name="x">Value</param>
+	/// <param name="mu">Mean</param>
+	/// <param name="sigma">Standard Deviation</param>
+	/// <returns>Probability density P(x)</returns>
+	private double GaussianPDF(double x, double mu, double sigma)
+	{
+	    if (sigma <= 0)
+	    {
+	       
+	        return 0;
+	    }
+	    double exponent = -Math.Pow(x - mu, 2) / (2 * Math.Pow(sigma, 2));
+	    double pdf = (1 / (Math.Sqrt(2 * Math.PI) * sigma)) * Math.Exp(exponent);
+	    
+	 
+	    
+	    return pdf;
+	}
+	
+	// With these lists
+			private List<double> historicalIncreases = new List<double>();
+			private List<double> historicalDecreases = new List<double>();
+			
+	        // Bayesian parameters
+	        double priorPriceIncrease = 0.5; // P(H=1)
+	        double priorPriceDecrease = 0.5; // P(H=0)
+	
+	        // Statistical parameters for likelihoods
+	        private double muIncrease = 0;
+	        private double sigmaIncrease = 1;
+	        private double muDecrease = 0;
+	        private double sigmaDecrease = 1;
+			
+			  private double muAskIncrease;
+	        private double sigmaAskIncrease;
+	        private double muAskDecrease;
+	        private double sigmaAskDecrease;
+			
+			  private double muBidIncrease;
+	        private double sigmaBidIncrease;
+	        private double muBidDecrease;
+	        private double sigmaBidDecrease;
+			
+			private double muRsiIncrease;
+			private double sigmaRsiIncrease;
+			private double muRsiDecrease;
+			private double sigmaRsiDecrease;
+			
+			private double muAdxIncrease;
+			private double sigmaAdxIncrease;
+			private double muAdxDecrease;
+			private double sigmaAdxDecrease;
+			
+			private double muMacdIncrease;
+			private double sigmaMacdIncrease;
+			private double muMacdDecrease;
+			private double sigmaMacdDecrease;
+			
+			double lastClose = 0;
+			
+			double p_h1_d;
+			double p_h0_d;
+	    }
 }
 

@@ -74,7 +74,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			//if(State == State.Realtime)
 			//{
 			
-			double FMA = TaylorFMA(MovingAverageType.EMA, 17)[0];
+			double FMA = TaylorFMA(MovingAverageType.EMA, 17, 1)[0];
 			var Z = ZScoreV10(8,20);
 			
 			if(Z.Z[0] >  Z.Upper2_Offset ) {

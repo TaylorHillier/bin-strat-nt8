@@ -137,6 +137,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			public string Direction { get; set; }
 			public bool HasCrossed { get; set; }
 			public int EndBar { get; set; }
+			public double UpBound { get; set; }
+			public double DownBound { get; set; }
         }
 
         #endregion
@@ -144,17 +146,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         #region Properties
 
 		[NinjaScriptProperty]
-		[Display(Name="ATMStrategy", Order=1, GroupName="Parameters")]
+		[Display(Name="ATMStrategy", Order=1, GroupName="Entry Conditions")]
 		public string ATMStrategy
 		{ get; set; }
 		
         [Range(1, int.MaxValue), NinjaScriptProperty]
-        [Display(Name = "Threshold", Description = "Minimum number of consecutive bars at a price level to trigger a line.", Order = 2, GroupName = "Parameters")]
+        [Display(Name = "Threshold", Description = "Minimum number of consecutive bars at a price level to trigger a line.", Order = 2, GroupName = "Entry Conditions")]
         public int Threshold
         {
             get { return threshold; }
             set { threshold = value; }
         }
+		
+			[Range(0, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Time For Trade (seconds)", Description = "Time at Level to Warrant trade", Order = 3, GroupName = "Entry Conditions")]
+        public double TimeThreshold
+       	{ get; set;}
+		
+			[Range(0, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Price Range for Accumulation (Ticks)", Description = "Price Range for Accumulation (Ticks)", Order = 4, GroupName = "Entry Conditions")]
+        public double PriceRange
+       	{ get; set;}
 		
 		[Range(1, int.MaxValue), NinjaScriptProperty]
         [Display(Name = "Number of Bars to Show", Description = "Number of Lines to Show.", Order = 3, GroupName = "Personalization")]
@@ -220,6 +232,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Use Limit Orders", Description = "Use Limit Orders", Order = 2, GroupName = "Order Handling")]
         public bool UseLimit {get; set;}
 		
+		[NinjaScriptProperty]
+        [Display(Name = "Use Moving Average to determine trade direction", Description = "Use Moving Average to determine trade direction", Order = 4, GroupName = "Order Handling")]
+        public bool ma {get; set;}
+		
         #endregion
 		
         private VolumeStreakLines volumeStreakLines;
@@ -258,15 +274,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Set other default properties as needed
 				
 				   // Default parameters
-                Threshold = 3;
+                Threshold = 50;
                 LineColorUp = Brushes.Green;
 				LineColorDown = Brushes.Red;
-                LineThickness = 2f;
+                LineThickness = 1f;
+				PriceRange = 4;
+				TimeThreshold = 2;
+				numBars = 20;
             }
             else if (State == State.Configure)
             {
-               scoreChangeQueue = new Queue<ScoreChange>();
-			   probabilityChangeQueue = new Queue<ProbabilityChange>();
+//               scoreChangeQueue = new Queue<ScoreChange>();
+//			   probabilityChangeQueue = new Queue<ProbabilityChange>();
             }
             else if (State == State.DataLoaded)
             {
@@ -386,12 +405,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         protected override void OnBarUpdate()
         {
 				
-			if(CurrentBar > 1){
-             var posteriors = CalculatePosteriors();
+//			if(CurrentBar > 1){
+//             var posteriors = CalculatePosteriors();
 
-            p_h1_d = posteriors.Item1;
-            p_h0_d = posteriors.Item2;
-			}
+//            p_h1_d = posteriors.Item1;
+//            p_h0_d = posteriors.Item2;
+//			}
 			
 			if(CurrentBar != activeBar && State == State.Realtime && Optimise){
 			
@@ -447,12 +466,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double upVolume;
 		public double downVolume;
 		public string direction;
+		public string currentDirection;
 		public double totalvolume;
 		double referencePrice = 0;
 		bool takeTrade = false;
 		double volumeSpeed;
 		double currentPrice;
-		DateTime lastTime;
+		DateTime lastTime = DateTime.MinValue;
 		double lastPrice;
 		double insideAsk;
 		double insideBid;
@@ -462,414 +482,351 @@ namespace NinjaTrader.NinjaScript.Strategies
 		double bar = 0;
 		double score = 0;
 		
-		private const int WindowSize = 100;
-	    private Queue<ScoreChange> scoreChangeQueue = new Queue<ScoreChange>();
-
-	    // Running sums of the scores in the queues
-	    private int currentScore = 0;
-	    private int currentScoreUp = 0;
-	    private int currentScoreDown = 0;
-	
-		    // Sliding Window for Probability Changes
-	    private Queue<ProbabilityChange> probabilityChangeQueue = new Queue<ProbabilityChange>();
-	    private double sum_p_h1_d = 0.0;
-	    private double sum_p_h0_d = 0.0;
-		
-		double avg_p_h1_d;
-		double avg_p_h0_d;
-		
 		bool checkDirection = false;
+		 double entry = 0;
 		
-        protected override void OnMarketData(MarketDataEventArgs e)
-        {
-            if(!UseAskBid)
-                return;
-            // Ensure we have at least one bar
-            if (CurrentBar < 5)
-                return;
-
-			if(CollectData){
-				UpdateSimTrades(18, 16);
-			}
-			
-         	volumeSpeed = Volume[0] + Volume[1] + Volume[2];
-			
-			direction = "na";	
-
-				if ( e.MarketDataType == MarketDataType.Bid)
-				{
-					insideBid = (double)e.Price;
-				}
-				else if ( e.MarketDataType == MarketDataType.Ask)
-				{
-					insideAsk = (double)e.Price;
-				}
-				
-				ProbabilityChange probChange = new ProbabilityChange(p_h1_d, p_h0_d);
-		        probabilityChangeQueue.Enqueue(probChange);
-		        sum_p_h1_d += probChange.p_h1_d;
-		        sum_p_h0_d += probChange.p_h0_d;
+		bool last;
 		
-		        if (probabilityChangeQueue.Count > WindowSize)
+		bool isInTrade = false;
+		
+		double midRange;
+		double highBound = 0;
+		double lowBound = 99999999;
+		
+		private List<TimeSpan> timeSpentInZones = new List<TimeSpan>();
+		private const int maxZonePoints = 10;  // Number of points to average
+		
+		protected override void OnMarketData(MarketDataEventArgs e)
+		{
+		    if (!UseAskBid)
+		        return;
+		
+		    // Ensure we have at least one bar
+		    if (CurrentBar < 5)
+		        return;
+		
+		    if (CollectData)
+		    {
+		        UpdateSimTrades(18, 16);
+		    }
+		
+		    volumeSpeed = Volume[0] + Volume[1] + Volume[2];
+		
+		    direction = "na";
+		
+		    if (e.MarketDataType == MarketDataType.Bid)
+		    {
+		        insideBid = (double)e.Price;
+		    }
+		    else if (e.MarketDataType == MarketDataType.Ask)
+		    {
+		        insideAsk = (double)e.Price;
+		    }
+		
+		    if (e.MarketDataType == MarketDataType.Last)
+		    {
+		        if (previousPrice == 0)
 		        {
-		            ProbabilityChange oldestProbChange = probabilityChangeQueue.Dequeue();
-		            sum_p_h1_d -= oldestProbChange.p_h1_d;
-		            sum_p_h0_d -= oldestProbChange.p_h0_d;
+		            previousPrice = e.Price;
 		        }
 		
-		        // Calculate moving averages
-		        avg_p_h1_d = sum_p_h1_d / probabilityChangeQueue.Count;
-		        avg_p_h0_d = sum_p_h0_d / probabilityChangeQueue.Count;
-				
-				if(e.MarketDataType == MarketDataType.Last){
-					if(previousPrice == 0){
-						previousPrice = e.Price;
+		        // Track current price and last price to determine movement
+		        currentPrice = e.Price;
+		        double lastMove = currentPrice - lastPrice;
+		
+		        // Detect volume accumulation at a particular price level
+		        if (Instrument.FullName.StartsWith("NQ"))
+		        {
+		            // Detect price slowing down within a small range
+		           
+		                // Accumulate volume without significant price movement
+		                if (e.Volume > 0)  // Only accumulate if there's volume
+		                {
+		                    if (e.Price > (e.Ask + e.Bid) / 2)
+		                    {
+		                        upVolume += e.Volume;
+								//downVolume = 0;
+		                    }
+		                    else if (e.Price < (e.Ask + e.Bid) / 2)
+		                    {
+		                        downVolume += e.Volume;
+								//upVolume = 0;
+		                    }
+		                    else
+		                    {
+		                        if (lastMove > 0)
+		                        {
+		                            upVolume += e.Volume;
+		                        }
+		                        else if (lastMove < 0)
+		                        {
+		                            downVolume += e.Volume;
+		                        }
+		                    }
+		                }
+						  
+		            
+					
+					if(currentPrice > highBound){
+						highBound = currentPrice;
 					}
-						
-					// Initialize score changes
-					currentPrice = e.Price;
-			        int scoreChange = 0;
-			        int scoreUpChange = 0;
-			        int scoreDownChange = 0;
-			
-			        // Apply your scoring logic
-			        if (e.Price > previousPrice &&  avg_p_h1_d> 0.6)
-			        {
-			            scoreChange = 1;
-			            scoreUpChange = 1; // Increment scoreUp
-			            // scoreDownChange remains 0
-			        }
-			        else if (e.Price < previousPrice &&  avg_p_h0_d> 0.6)
-			        {
-			            scoreChange = 1;
-			            scoreDownChange = 1; // Increment scoreDown
-			            // scoreUpChange remains 0
-			        }
-			        else if (e.Price > previousPrice && avg_p_h0_d > 0.6)      
-			        {
-			            scoreChange = -1;
-						 scoreDownChange = -1;
-						 scoreUpChange = -1;
-			            // scoreUpChange and scoreDownChange remain 0
-			        }
-					else if(e.Price < previousPrice &&  avg_p_h1_d > 0.6)
+					
+					if(currentPrice < lowBound){
+						lowBound = currentPrice;
+					}
+		
+					if (highBound - lowBound > PriceRange * TickSize)
 					{
-						 scoreChange = -1;
-						 scoreDownChange = -1;
-						 scoreUpChange = -1;
+					    // Calculate time spent in the current zone
+					    TimeSpan timeSpent = e.Time - lastTime;
+					
+					    // Add to the list of time spans and manage list size
+					    if (lastTime != DateTime.MinValue)
+					    {
+					        timeSpentInZones.Add(timeSpent);
+					        if (timeSpentInZones.Count > maxZonePoints)
+					        {
+					            timeSpentInZones.RemoveAt(0);
+					        }
+					    }
+					
+					    // Reset for the next zone
+					    previousPrice = currentPrice;
+					    upVolume = 0;
+					    downVolume = 0;
+					    lowBound = currentPrice;
+					    highBound = currentPrice;
+					    lastTime = e.Time;  // Resetting the lastTime to the current event time
 					}
-			
-			        // Create a ScoreChange object with the deltas
-			        ScoreChange change = new ScoreChange(scoreChange, scoreUpChange, scoreDownChange);
-			
-			        // Enqueue the new score change
-			        scoreChangeQueue.Enqueue(change);
-			
-			        // Update the running sums
-			        currentScore += change.ScoreDelta;
-			        currentScoreUp += change.ScoreUpDelta;
-			        currentScoreDown += change.ScoreDownDelta;
-			
-			        // If the queue exceeds the window size, dequeue the oldest score change
-			        if (scoreChangeQueue.Count > WindowSize)
-			        {
-			            ScoreChange oldestChange = scoreChangeQueue.Dequeue();
-			            currentScore -= oldestChange.ScoreDelta;
-			            currentScoreUp -= oldestChange.ScoreUpDelta;
-			            currentScoreDown -= oldestChange.ScoreDownDelta;
-			        }
-			
-			        // Print the current scores
-//			        Print($"Current Score: {currentScore}");
-//			        Print($"Current ScoreUp: {currentScoreUp}");
-//			        Print($"Current ScoreDown: {currentScoreDown}");
-		
-					double lastMove;
-					if(currentPrice - lastPrice != 0){
-						lastMove = currentPrice - lastPrice;
-					}else {
-						lastMove = 0;
-					}
-			
-					if(Instrument.FullName.StartsWith("NQ"))
+					
+					midRange = (highBound + lowBound) / 2;
+					totalvolume += e.Volume;
+					
+					TimeSpan t = e.Time - lastTime;
+					
+					if (timeSpentInZones.Count > 0)
 					{
-						
-							if(e.Price > previousPrice + 8 * TickSize || e.Price <  previousPrice - 8 * TickSize)
-				            {
-								upVolume = 0;
-								downVolume = 0;
-								totalvolume = 0;
-								previousPrice = e.Price;
-				            }
-							else if((e.Price <= previousPrice + 0 * TickSize || e.Price >=  previousPrice - 0 * TickSize) && e.Price == previousPrice)
-								
-							if(e.Price > (e.Ask + e.Bid) / 2 ){
-								upVolume  += e.Volume;
-//								downVolume = 0;
-								//Print(upVolume + " up volume at " + currentPrice);
-							}
-							else if(e.Price <  (e.Ask + e.Bid) / 2 ){
-								downVolume += e.Volume;
-//								upVolume = 0;
-								//Print(downVolume + " down volume at " + currentPrice);
-							} else if(e.Price ==  (e.Ask + e.Bid) / 2 ){
-								if(lastMove > 0){
-									upVolume += e.Volume;
-//									downVolume = 0;
-								} else if(lastMove < 0){
-									downVolume += e.Volume;
-//									upVolume = 0;
-								}
-							}
-						
-							totalvolume += e.Volume;
-						
-						 if (upVolume >= Threshold || downVolume >=Threshold)
-				         {
-							 
-								
-							takeTrade = true;
-							checkDirection = true;
-							referencePrice = currentPrice;
-							 Print($"Threshold met - UpVolume: {upVolume}, DownVolume: {downVolume}, CurrentPrice: {currentPrice}, Previous Price: {previousPrice}");
-						}
-//					}
-				
-	            }
-				
-				if (e.Price > EMA(20)[0])
-		        {
-		            direction = "Up";
-				
-		        }
-		        else if (e.Price < EMA(20)[0])
-		        {
-		            direction = "Down";
-			
-		        }
+					    // Calculate the average time spent in seconds
+					    double averageTimeSpentSeconds = timeSpentInZones.Average(ts => ts.TotalSeconds);
+					
+					    // Get the current time spent in seconds
+					    double currentTimeSpentSeconds = t.TotalSeconds;
+					
+					    // Compare the current time to the threshold (average time * TimeThreshold)
+					    if ((upVolume - downVolume > Threshold || downVolume - upVolume > Threshold) &&
+					        currentTimeSpentSeconds > averageTimeSpentSeconds * TimeThreshold)
+					    {
+					        if (lastTime != DateTime.MinValue)
+					        {
+					            takeTrade = true;
+					            checkDirection = true;
+					            referencePrice = currentPrice;
+					
+					            direction = upVolume > downVolume ? "Up" : "Down";
+					
+					            Print($"Trade Signal - Direction: {direction}, UpVolume: {upVolume}, DownVolume: {downVolume}, CurrentPrice: {currentPrice}");
+					            Print($"Average Time Spent In Zone: {averageTimeSpentSeconds} seconds, Current Time In Zone: {currentTimeSpentSeconds} seconds");
+					
+					            // Reset volume variables after deciding to take a trade
+					            upVolume = 0;
+					            downVolume = 0;
+					            totalvolume = 0;
+					
+					            // Reset the time after taking a trade
+					            lastTime = DateTime.MinValue;
+					        }
+					    }
+					}
+				}
 		
-				if(checkDirection){
-					bool priceIncreased = Close[0] >= lastClose + profitTarget * TickSize;
-			
-					if ((Close[0] > lastClose + profitTarget * TickSize || Close[0] < lastClose - profitTarget * TickSize))
+		        // Add logic to manage streak lines
+		        if (streakLines.Count != 0)
+		        {
+		            foreach (var line in streakLines)
 		            {
-		                // Update historical data
-		                UpdateHistoricalData(priceIncreased);
-						lastClose = Close[0];
-						checkDirection = false;
+		                if (line.Direction == "Up" && e.Price > line.PriceLevel + profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed)
+		                {
+		                    line.HasCrossed = true;
+		                    line.EndBar = CurrentBars[0];
+		                }
+		
+		                if (line.Direction == "Down" && e.Price < line.PriceLevel - profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed)
+		                {
+		                    line.HasCrossed = true;
+		                    line.EndBar = CurrentBars[0];
+		                }
 		            }
-				}
-				
-				if(streakLines.Count != 0){
-					foreach(var line in streakLines){
-						
-						if(line.Direction == "Up" && e.Price < line.PriceLevel - profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed){
-							line.HasCrossed = true;
-							line.EndBar = CurrentBars[0] ;
-						}
-						
-						if(line.Direction == "Down" && e.Price > line.PriceLevel + profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed){
-							line.HasCrossed = true;
-							line.EndBar = CurrentBars[0] ;
-						}
-						
-					}
-				}
-				if(takeTrade && direction != "na")
-				{
-
-					int streakStartBar = CurrentBars[0] ;
-	                streakLines.Add(new StreakLine
-	                {
-	                    StartBar = streakStartBar,
-	                    PriceLevel =  referencePrice,
-						Direction = direction,
-						HasCrossed = false
-	                });
-					
-				
-					
-					if(State == State.Historical && CollectData)
-					{
-						
-						SimTradeLVL newTrade = new SimTradeLVL(
-					        currentPrice,
-							upVolume > downVolume ? upVolume : downVolume,
-							direction,
-							volumeSpeed,
-							ADX(14)[0],
-							RSI(14,2)[0]
-					    );
-				
-					    simTrades.Add(newTrade);
-						
-					}
-					
-						
-					if(takeTrade ){
-						upVolume = 0;
-						downVolume = 0;
-						totalvolume = 0;
-						takeTrade = false;
-					}
-					
-					if (orderId.Length > 0 || atmStrategyId.Length > 0 || State != State.Realtime || Position.MarketPosition != MarketPosition.Flat)
-		        	return;
-			
-		            if (UseAskBid ? direction == "Up" && isTrendMode && isLongMode : isLongMode )
+		        }
+		
+		        // Take trade if conditions are met
+		        if (takeTrade && direction != "na")
+		        {
+		            int streakStartBar = CurrentBars[0];
+		            streakLines.Add(new StreakLine
 		            {
-						
-		                 isAtmStrategyCreated = false;
-				    	orderId = GetAtmStrategyUniqueId();
-				    	atmStrategyId = GetAtmStrategyUniqueId();
-				
-				    	AtmStrategyCreate(
-				        OrderAction.Buy,
-				         UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ?  previousPrice - limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
-				        orderId, ATMStrategy, atmStrategyId,
-				        (atmCallbackErrorCode, atmCallBackId) =>
-				        {
-				            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-				            {
-				                isAtmStrategyCreated = true;
-				            }
-				        });
-		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
-//						resetButtons();
-//						EnterLong(2,"Long");
-//						SetStopLoss(CalculationMode.Ticks, Math.Abs(Close[1]- Low[1]) * 4 * 2);
-//						SetProfitTarget(CalculationMode.Ticks, Math.Abs(Close[1] - Low[1]) * 4 * 2);
-						
+		                StartBar = streakStartBar,
+		                PriceLevel = midRange,
+		                Direction = direction,
+		                HasCrossed = false,
+						UpBound = highBound,
+						DownBound = lowBound
+		            });
+		
+		            if (State == State.Historical && CollectData)
+		            {
+		                if (!isInTrade)
+		                {
+		                    SimTradeLVL newTrade = new SimTradeLVL(
+		                        currentPrice,
+		                        Math.Max(upVolume, downVolume),
+		                        direction,
+		                        volumeSpeed,
+		                        ADX(14)[0],
+		                        RSI(14, 2)[0]
+		                    );
+		
+		                    simTrades.Add(newTrade);
+		                    isInTrade = true;
+		                }
 		            }
 
-		            if ( UseAskBid ? direction == "Down"  && isTrendMode &&  isShortMode   : isShortMode )
+		            takeTrade = false;
+		
+		            // Manage ATM strategies and orders
+		            if (orderId.Length > 0 || atmStrategyId.Length > 0 || State != State.Realtime || Position.MarketPosition != MarketPosition.Flat)
+		                return;
+		
+		            if (UseAskBid ? direction == "Up" && isTrendMode && isLongMode : isLongMode)
 		            {
-						
+		                entry = currentPrice;
+		                currentDirection = "Up";
 		                isAtmStrategyCreated = false;
-				    	orderId = GetAtmStrategyUniqueId();
-				    	atmStrategyId = GetAtmStrategyUniqueId();
-				
-				    	AtmStrategyCreate(
-				        OrderAction.Sell,
-				         UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ?  previousPrice + limitOrderOffset * TickSize : 0,0, TimeInForce.Gtc,
-				        orderId, ATMStrategy, atmStrategyId,
-				        (atmCallbackErrorCode, atmCallBackId) =>
-				        {
-				            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-				            {
-				                isAtmStrategyCreated = true;
-				            }
-				        });
-		                Print($"[{Time[0]}] Entering Short Position (Auto Arm) ");
-//						resetButtons();
-//						EnterShort(2,"Short");
-//						SetStopLoss(CalculationMode.Ticks, Math.Abs(Close[1] - High[1]) * 4 * 2);
-//						SetProfitTarget(CalculationMode.Ticks, Math.Abs(Close[1]- High[1]) * 4 * 2);
-						
-		            }
-					
-					if(!UseAskBid)
-						return;
-					
-					if (direction == "Down"  && isShortMode && isRegressionMode)
-		            {
-		                 isAtmStrategyCreated = false;
-				    	orderId = GetAtmStrategyUniqueId();
-				    	atmStrategyId = GetAtmStrategyUniqueId();
-				
-				    	AtmStrategyCreate(
-				        OrderAction.Buy,
-				        UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ?  previousPrice - limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
-				        orderId, ATMStrategy, atmStrategyId,
-				        (atmCallbackErrorCode, atmCallBackId) =>
-				        {
-				            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-				            {
-				                isAtmStrategyCreated = true;
-				            }
-				        });
-		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
-						//resetButtons();
-						
-//						EnterLong(2,"Long");
-//						SetStopLoss(CalculationMode.Ticks, Math.Abs(Close[1]- High[1]) * 4 * 2);
-//						SetProfitTarget(CalculationMode.Ticks, Math.Abs(Close[1] - High[1]) * 4 * 2);
-						
-		            }
-					
-					if (direction == "Up"  && isLongMode && isRegressionMode  )
-		            {
-		                 isAtmStrategyCreated = false;
-				    	orderId = GetAtmStrategyUniqueId();
-				    	atmStrategyId = GetAtmStrategyUniqueId();
-				
-				    	AtmStrategyCreate(
-				        OrderAction.Sell,
-				        UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ?  previousPrice + limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
-				        orderId, ATMStrategy, atmStrategyId,
-				        (atmCallbackErrorCode, atmCallBackId) =>
-				        {
-				            if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
-				            {
-				                isAtmStrategyCreated = true;
-				            }
-				        });
-		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
-//						resetButtons();
-						
-//							EnterShort(2,"Short");
-//						SetStopLoss(CalculationMode.Ticks, Math.Abs(Close[1] - Low[1]) * 4 * 2);
-//						SetProfitTarget(CalculationMode.Ticks, Math.Abs(Close[1]- Low[1]) * 4 * 2);
-						
-		            }
-					
-	            }
-				
-				
-				
-				if(streakLines.Count() > numBars){
-					streakLines.RemoveAt(0);
-				}
-				}
-				
-			   // Manage ATM Strategies and Orders
-            if (State == State.Realtime){
-	           if (!isAtmStrategyCreated)
-					return;
-			
-				
-					// Check for a pending entry order
-					if (orderId.Length > 0)
-					{
-						string[] status = GetAtmStrategyEntryOrderStatus(orderId);
-					
-						// If the status call can't find the order specified, the return array length will be zero otherwise it will hold elements
-						if (status.GetLength(0) > 0)
-						{
-						
-							// If the order state is terminal, reset the order id value
-							if (status[2] == "Filled" || status[2] == "Cancelled" || status[2] == "Rejected")
-								orderId = string.Empty;
-						}
-					} // If the strategy has terminated reset the strategy id
-					else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat) 
-						atmStrategyId = string.Empty;
-					
-					if(UseLimit){
-						if(atmStrategyId.Length > 0 && GetAtmStrategyMarketPosition(atmStrategyId)  == Cbi.MarketPosition.Flat && (e.Price >  referencePrice + 12 * TickSize ||  e.Price <  referencePrice - 12 * TickSize)){
-							   AtmStrategyClose(atmStrategyId);
-						}
-					}
-			}
-			
-        }
+		                orderId = GetAtmStrategyUniqueId();
+		                atmStrategyId = GetAtmStrategyUniqueId();
 		
+		                AtmStrategyCreate(
+		                    OrderAction.Buy,
+		                    UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ? previousPrice - limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
+		                    orderId, ATMStrategy, atmStrategyId,
+		                    (atmCallbackErrorCode, atmCallBackId) =>
+		                    {
+		                        if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                        {
+		                            isAtmStrategyCreated = true;
+		                        }
+		                    });
+		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
+		            }
+		
+		            if (UseAskBid ? direction == "Down" && isTrendMode && isShortMode : isShortMode)
+		            {
+		                entry = currentPrice;
+		                currentDirection = "Down";
+		                isAtmStrategyCreated = false;
+		                orderId = GetAtmStrategyUniqueId();
+		                atmStrategyId = GetAtmStrategyUniqueId();
+		
+		                AtmStrategyCreate(
+		                    OrderAction.Sell,
+		                    UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ? previousPrice + limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
+		                    orderId, ATMStrategy, atmStrategyId,
+		                    (atmCallbackErrorCode, atmCallBackId) =>
+		                    {
+		                        if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                        {
+		                            isAtmStrategyCreated = true;
+		                        }
+		                    });
+		                Print($"[{Time[0]}] Entering Short Position (Auto Arm)");
+		            }
+					
+					   if (UseAskBid ? direction == "Up" && isRegressionMode && isLongMode : isLongMode)
+		            {
+		                entry = currentPrice;
+		                currentDirection = "Up";
+		                isAtmStrategyCreated = false;
+		                orderId = GetAtmStrategyUniqueId();
+		                atmStrategyId = GetAtmStrategyUniqueId();
+		
+		                AtmStrategyCreate(
+		                    OrderAction.Sell,
+		                    UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ? previousPrice - limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
+		                    orderId, ATMStrategy, atmStrategyId,
+		                    (atmCallbackErrorCode, atmCallBackId) =>
+		                    {
+		                        if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                        {
+		                            isAtmStrategyCreated = true;
+		                        }
+		                    });
+		                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
+		            }
+		
+		            if (UseAskBid ? direction == "Down" && isRegressionMode && isShortMode : isShortMode)
+		            {
+		                entry = currentPrice;
+		                currentDirection = "Down";
+		                isAtmStrategyCreated = false;
+		                orderId = GetAtmStrategyUniqueId();
+		                atmStrategyId = GetAtmStrategyUniqueId();
+		
+		                AtmStrategyCreate(
+		                    OrderAction.Buy,
+		                    UseLimit ? OrderType.Limit : OrderType.Market, UseLimit ? previousPrice + limitOrderOffset * TickSize : 0, 0, TimeInForce.Gtc,
+		                    orderId, ATMStrategy, atmStrategyId,
+		                    (atmCallbackErrorCode, atmCallBackId) =>
+		                    {
+		                        if (atmCallbackErrorCode == ErrorCode.NoError && atmCallBackId == atmStrategyId)
+		                        {
+		                            isAtmStrategyCreated = true;
+		                        }
+		                    });
+		                Print($"[{Time[0]}] Entering Short Position (Auto Arm)");
+		            }
+		        }
+		
+		        if (streakLines.Count() > numBars)
+		        {
+		            streakLines.RemoveAt(0);
+		        }
+		    }
+		
+		    // Manage ATM Strategies and Orders
+		    if (State == State.Realtime)
+		    {
+		        if (!isAtmStrategyCreated)
+		            return;
+		
+		        // Check for a pending entry order
+		        if (orderId.Length > 0)
+		        {
+		            string[] status = GetAtmStrategyEntryOrderStatus(orderId);
+		
+		            // If the order state is terminal, reset the order id value
+		            if (status.GetLength(0) > 0 && (status[2] == "Filled" || status[2] == "Cancelled" || status[2] == "Rejected"))
+		                orderId = string.Empty;
+		        }
+		        // If the strategy has terminated, reset the strategy id
+		        else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId) == Cbi.MarketPosition.Flat)
+		            atmStrategyId = string.Empty;
+		
+		        if (atmStrategyId.Length > 0 && UseLimit)
+		        {
+		            if (GetAtmStrategyMarketPosition(atmStrategyId) == Cbi.MarketPosition.Flat &&
+		                (e.Price > midRange + 20 * TickSize || e.Price < midRange - 20 * TickSize))
+		            {
+		                AtmStrategyClose(atmStrategyId);
+		            }
+		        }
+		    }
+		}
+
 			private void UpdateTradeStatus(SimTradeLVL trade, string status)
 			{
 			    trade.Status = status;
 				
 			    trade.IsCompleted = true;
-		
+				isInTrade = false;
 				WriteTradesToCsv();
 			}
 		
@@ -1136,11 +1093,20 @@ namespace NinjaTrader.NinjaScript.Strategies
 		}
 		
 		protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
-        {
-            base.OnRender(chartControl, chartScale);
-
-			
-			var textFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 12)
+		{
+		    base.OnRender(chartControl, chartScale);
+		
+		    if (streakLines == null || streakLines.Count == 0)
+		        return;
+		
+		    // Make a copy of the collection
+		    List<StreakLine> streakLinesCopy;
+		    lock (streakLines)
+		    {
+		        streakLinesCopy = new List<StreakLine>(streakLines);
+		    }
+		
+		    var textFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 12)
 		    {
 		        TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading,
 		        ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Center
@@ -1151,71 +1117,91 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading,
 		        ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Near
 		    };
-			
-			 SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.White);
-			
-			    float metricsX = 10;
+		
+		    SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.White);
+		
+		    float metricsX = 10;
 		    float metricsY = 10;
-			
-			
-			 RenderTarget.DrawText($"Long Probability: {p_h1_d:F3}", metricsFormat, 
-		        new SharpDX.RectangleF(metricsX, metricsY, 200, 20), 
+		
+		    RenderTarget.DrawText($"Trading Mode: {(isTrendMode ? "Trend" : "Regression"):F3}", metricsFormat,
+		        new SharpDX.RectangleF(metricsX, metricsY + 40, 200, 20),
 		        textBrush);
-			
-			
-			 RenderTarget.DrawText($"Short Probability: {p_h0_d:F3}", metricsFormat, 
-		        new SharpDX.RectangleF(metricsX, metricsY + 20, 200, 20), 
+		
+		    RenderTarget.DrawText($"Up Volume: {upVolume}", metricsFormat,
+		        new SharpDX.RectangleF(metricsX, metricsY + 60, 200, 20),
 		        textBrush);
-			
-				 RenderTarget.DrawText($"Trading Mode: {(isTrendMode ? "Trend" : "Regression"):F3}", metricsFormat, 
-		        new SharpDX.RectangleF(metricsX, metricsY + 40, 200, 20), 
+		
+		    RenderTarget.DrawText($"Down Volume: {downVolume}", metricsFormat,
+		        new SharpDX.RectangleF(metricsX, metricsY + 80, 200, 20),
 		        textBrush);
-			
-            if (streakLines == null || streakLines.Count == 0)
-                return;
-
-            foreach (var line in streakLines)
-            {
-                // Calculate bars ago
-                int barsAgo = CurrentBar - line.StartBar;
-                if (barsAgo < 0)
-                    continue; // Future bar, skip
-
-                // Get the pixel position for the start bar
-                float x = chartControl.GetXByBarIndex(ChartBars, line.StartBar);
-				//float x = chartControl.CanvasLeft;
-                if (float.IsNaN(x))
-                    continue; // Invalid X position
-
-                // Get the Y position for the price level
-                float y = chartScale.GetYByValue(line.PriceLevel);
-
-				 float endX = chartControl.CanvasRight;
-				
-				if(line.HasCrossed == true){
-					endX = chartControl.GetXByBarIndex(ChartBars, line.EndBar);
-				}
-			
-
-                // Create SharpDX brush (fully qualified to avoid ambiguity)
-                SharpDX.Direct2D1.Brush dxBrush = CreateDxBrush(line.Direction == "Up" ? LineColorUp : LineColorDown, RenderTarget);
-
-                // Draw the line using SharpDX.Vector2 fully qualified
-                RenderTarget.DrawLine(
-                    new SharpDX.Vector2(x, y),
-                    new SharpDX.Vector2(endX, y),
-                    dxBrush,
-                    line.HasCrossed ? LineThickness * 3 : LineThickness);
-
-                // Dispose the brush to free resources
-                dxBrush.Dispose();
-            }
-			
-			 textBrush.Dispose();
-		   
+		
+		    foreach (var line in streakLinesCopy)
+		    {
+		        // Calculate bars ago
+		        int barsAgo = CurrentBar - line.StartBar;
+		        if (barsAgo < 0)
+		            continue; // Future bar, skip
+		
+		        // Get the pixel position for the start bar
+		        float x = chartControl.GetXByBarIndex(ChartBars, line.StartBar);
+		        if (float.IsNaN(x))
+		            continue; // Invalid X position
+		
+		        // Get the Y position for the price level
+		        float y = chartScale.GetYByValue(line.PriceLevel);
+		        float endX = chartControl.CanvasRight;
+		
+		        if (line.HasCrossed)
+		        {
+		            endX = chartControl.GetXByBarIndex(ChartBars, line.EndBar);
+		        }
+		
+		        // Create SharpDX brush for the fill with 30% opacity
+		        SharpDX.Color fillColor = line.Direction == "Up" ? SharpDX.Color.Green : SharpDX.Color.Red;
+				Brush brushColor = line.Direction == "Up" ? Brushes.Green : Brushes.Red;
+		        SharpDX.Color semiTransparentColor = new SharpDX.Color(fillColor.R, fillColor.G, fillColor.B, 0.3f);
+		        SharpDX.Direct2D1.Brush fillBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, semiTransparentColor);
+		
+		        // Draw the rectangle based on upBound and downBound
+		        float upY = chartScale.GetYByValue(line.UpBound);
+		        float downY = chartScale.GetYByValue(line.DownBound);
+		        var rect = new SharpDX.RectangleF(x, Math.Min(upY, downY), endX - x, Math.Abs(upY - downY));
+		
+		        // Fill the rectangle with semi-transparent color
+		        RenderTarget.FillRectangle(rect, fillBrush);
+		
+		        // Create dashed stroke style for the outline
+		        var dashedStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(Core.Globals.D2DFactory, new SharpDX.Direct2D1.StrokeStyleProperties
+		        {
+		            DashStyle = SharpDX.Direct2D1.DashStyle.Dash
+		        });
+		
+		        // Draw the rectangle outline with dashed line
+		        RenderTarget.DrawRectangle(rect, fillBrush, LineThickness, dashedStrokeStyle);
+		
+		        // Dispose resources for each loop
+		        fillBrush.Dispose();
+		        dashedStrokeStyle.Dispose();
+		
+		        // Create SharpDX brush for the streak line
+		        SharpDX.Direct2D1.Brush lineBrush = CreateDxBrush(brushColor, RenderTarget);
+		
+		        // Draw the streak line
+		        RenderTarget.DrawLine(
+		            new SharpDX.Vector2(x, y),
+		            new SharpDX.Vector2(endX, y),
+		            lineBrush,
+		            line.HasCrossed ? LineThickness * 3 : LineThickness);
+		
+		        // Dispose of the line brush
+		        lineBrush.Dispose();
+		    }
+		
+		    textBrush.Dispose();
 		    textFormat.Dispose();
 		    metricsFormat.Dispose();
-        }
+		}
+
 
         #region Helper Classes
 
@@ -1267,322 +1253,322 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         #endregion
 		
-		private int maxSequenceLength = 1000; // Adjust as needed
+//		private int maxSequenceLength = 1000; // Adjust as needed
 		
-		private List<double> historicalAskVolumes = new List<double>();  // List to store historical ask volumes
-		private List<double> historicalBidVolumes = new List<double>();  // List to store historical bid volumes
+//		private List<double> historicalAskVolumes = new List<double>();  // List to store historical ask volumes
+//		private List<double> historicalBidVolumes = new List<double>();  // List to store historical bid volumes
 		
-		private List<double> historicalAskIncreases = new List<double>();  // List to store historical ask volumes
-		private List<double> historicalBidIncreases = new List<double>();  // List to store historical bid volumes
+//		private List<double> historicalAskIncreases = new List<double>();  // List to store historical ask volumes
+//		private List<double> historicalBidIncreases = new List<double>();  // List to store historical bid volumes
 		
-		private List<double> historicalAskDecreases = new List<double>();  // List to store historical ask volumes
-		private List<double> historicalBidDecreases = new List<double>();  // List to store historical bid volumes
+//		private List<double> historicalAskDecreases = new List<double>();  // List to store historical ask volumes
+//		private List<double> historicalBidDecreases = new List<double>();  // List to store historical bid volumes
 	
-		private List<double> historicalRsiIncreases = new List<double>();
-		private List<double> historicalRsiDecreases = new List<double>();
+//		private List<double> historicalRsiIncreases = new List<double>();
+//		private List<double> historicalRsiDecreases = new List<double>();
 		
-		private List<double> historicalAdxIncreases = new List<double>();
-		private List<double> historicalAdxDecreases = new List<double>();
+//		private List<double> historicalAdxIncreases = new List<double>();
+//		private List<double> historicalAdxDecreases = new List<double>();
 		
-		private List<double> historicalMacdIncreases = new List<double>();
-		private List<double> historicalMacdDecreases = new List<double>();
+//		private List<double> historicalMacdIncreases = new List<double>();
+//		private List<double> historicalMacdDecreases = new List<double>();
 
-		private List<(int Observation, double AskVolume, double BidVolume, double Rsi, double Adx, double Macd)> observationData = new List<(int, double, double, double, double, double)>();
+//		private List<(int Observation, double AskVolume, double BidVolume, double Rsi, double Adx, double Macd)> observationData = new List<(int, double, double, double, double, double)>();
 
-		private void UpdateHistoricalData(bool priceIncreased)
-		{
-		    // Calculate technical indicators
-		    double rsi = RSI(5, 3)[0] - RSI(5, 3)[1];
-		    double adx =  ADX(5)[0] - ADX(5)[1];
-		    double macd = MACD(12, 26, 9).Diff[0] - MACD(12, 26, 9).Diff[1];
+//		private void UpdateHistoricalData(bool priceIncreased)
+//		{
+//		    // Calculate technical indicators
+//		    double rsi = RSI(5, 3)[0] - RSI(5, 3)[1];
+//		    double adx =  ADX(5)[0] - ADX(5)[1];
+//		    double macd = MACD(12, 26, 9).Diff[0] - MACD(12, 26, 9).Diff[1];
 
-		    // Calculate volume imbalance
-		    double totalBidVolume = upVolume;
-		    double totalAskVolume = downVolume;
+//		    // Calculate volume imbalance
+//		    double totalBidVolume = upVolume;
+//		    double totalAskVolume = downVolume;
 		
-		    // Add the observation, ask, bid volumes, and technical indicators to observationData
-		    int observation = priceIncreased ? 1 : 0;
-		    observationData.Add((observation, totalAskVolume, totalBidVolume, rsi, adx, macd));
+//		    // Add the observation, ask, bid volumes, and technical indicators to observationData
+//		    int observation = priceIncreased ? 1 : 0;
+//		    observationData.Add((observation, totalAskVolume, totalBidVolume, rsi, adx, macd));
 		
-		    // Update historical data based on price movement 
-		    if (priceIncreased)
-		    {
-		        historicalAskIncreases.Add(totalAskVolume);
-		        historicalBidIncreases.Add(totalBidVolume);
-		        historicalRsiIncreases.Add(rsi);
-		        historicalAdxIncreases.Add(adx);
-		        historicalMacdIncreases.Add(macd);
-		    }
-		    else
-		    {
-		        historicalAskDecreases.Add(totalAskVolume);
-		        historicalBidDecreases.Add(totalBidVolume);
-		        historicalRsiDecreases.Add(rsi);
-		        historicalAdxDecreases.Add(adx);
-		        historicalMacdDecreases.Add(macd);
-		    }
+//		    // Update historical data based on price movement 
+//		    if (priceIncreased)
+//		    {
+//		        historicalAskIncreases.Add(totalAskVolume);
+//		        historicalBidIncreases.Add(totalBidVolume);
+//		        historicalRsiIncreases.Add(rsi);
+//		        historicalAdxIncreases.Add(adx);
+//		        historicalMacdIncreases.Add(macd);
+//		    }
+//		    else
+//		    {
+//		        historicalAskDecreases.Add(totalAskVolume);
+//		        historicalBidDecreases.Add(totalBidVolume);
+//		        historicalRsiDecreases.Add(rsi);
+//		        historicalAdxDecreases.Add(adx);
+//		        historicalMacdDecreases.Add(macd);
+//		    }
 		
-		    // Maintain the maximum sequence length
-		    if (observationData.Count > maxSequenceLength)
-		    {
-		        // Remove the oldest observation
-		        var oldestObservation = observationData[0];
-		        observationData.RemoveAt(0);
+//		    // Maintain the maximum sequence length
+//		    if (observationData.Count > maxSequenceLength)
+//		    {
+//		        // Remove the oldest observation
+//		        var oldestObservation = observationData[0];
+//		        observationData.RemoveAt(0);
 		
-		        bool wasPriceIncrease = oldestObservation.Observation == 1;
+//		        bool wasPriceIncrease = oldestObservation.Observation == 1;
 		
-		        if (wasPriceIncrease)
-		        {
-		            // Remove data from increases lists
-		            historicalAskIncreases.RemoveAt(0);
-		            historicalBidIncreases.RemoveAt(0);
-		            historicalRsiIncreases.RemoveAt(0);
-		            historicalAdxIncreases.RemoveAt(0);
-		            historicalMacdIncreases.RemoveAt(0);
-		        }
-		        else
-		        {
-		            // Remove data from decreases lists
-		            historicalAskDecreases.RemoveAt(0);
-		            historicalBidDecreases.RemoveAt(0);
-		            historicalRsiDecreases.RemoveAt(0);
-		            historicalAdxDecreases.RemoveAt(0);
-		            historicalMacdDecreases.RemoveAt(0);
-		        }
-		    }
+//		        if (wasPriceIncrease)
+//		        {
+//		            // Remove data from increases lists
+//		            historicalAskIncreases.RemoveAt(0);
+//		            historicalBidIncreases.RemoveAt(0);
+//		            historicalRsiIncreases.RemoveAt(0);
+//		            historicalAdxIncreases.RemoveAt(0);
+//		            historicalMacdIncreases.RemoveAt(0);
+//		        }
+//		        else
+//		        {
+//		            // Remove data from decreases lists
+//		            historicalAskDecreases.RemoveAt(0);
+//		            historicalBidDecreases.RemoveAt(0);
+//		            historicalRsiDecreases.RemoveAt(0);
+//		            historicalAdxDecreases.RemoveAt(0);
+//		            historicalMacdDecreases.RemoveAt(0);
+//		        }
+//		    }
 		
-		    // Recalculate statistical parameters and Bayesian priors
-		    RecalculateStatistics();
-		}
+//		    // Recalculate statistical parameters and Bayesian priors
+//		    RecalculateStatistics();
+//		}
 		
 
-		private void RecalculateStatistics()
-		{
-		    // Recalculate for price increases
-		    if (historicalAskIncreases.Count > 0)
-		    {
-		        muAskIncrease = historicalAskIncreases.Average();
-		        sigmaAskIncrease = Math.Sqrt(historicalAskIncreases.Average(askvolume => Math.Pow(askvolume - muAskIncrease, 2)));
+//		private void RecalculateStatistics()
+//		{
+//		    // Recalculate for price increases
+//		    if (historicalAskIncreases.Count > 0)
+//		    {
+//		        muAskIncrease = historicalAskIncreases.Average();
+//		        sigmaAskIncrease = Math.Sqrt(historicalAskIncreases.Average(askvolume => Math.Pow(askvolume - muAskIncrease, 2)));
 				
-				muBidIncrease = historicalBidIncreases.Average();
-		        sigmaBidIncrease = Math.Sqrt(historicalBidIncreases.Average(bidvolume => Math.Pow(bidvolume - muBidIncrease, 2)));
+//				muBidIncrease = historicalBidIncreases.Average();
+//		        sigmaBidIncrease = Math.Sqrt(historicalBidIncreases.Average(bidvolume => Math.Pow(bidvolume - muBidIncrease, 2)));
 		
-		        muRsiIncrease = historicalRsiIncreases.Average();
-		        sigmaRsiIncrease = Math.Sqrt(historicalRsiIncreases.Average(rsi => Math.Pow(rsi - muRsiIncrease, 2)));
+//		        muRsiIncrease = historicalRsiIncreases.Average();
+//		        sigmaRsiIncrease = Math.Sqrt(historicalRsiIncreases.Average(rsi => Math.Pow(rsi - muRsiIncrease, 2)));
 		
-		        muAdxIncrease = historicalAdxIncreases.Average();
-		        sigmaAdxIncrease = Math.Sqrt(historicalAdxIncreases.Average(adx => Math.Pow(adx - muAdxIncrease, 2)));
+//		        muAdxIncrease = historicalAdxIncreases.Average();
+//		        sigmaAdxIncrease = Math.Sqrt(historicalAdxIncreases.Average(adx => Math.Pow(adx - muAdxIncrease, 2)));
 		
-		        muMacdIncrease = historicalMacdIncreases.Average();
-		        sigmaMacdIncrease = Math.Sqrt(historicalMacdIncreases.Average(macd => Math.Pow(macd - muMacdIncrease, 2)));
-		    }
-		    else
-		    {
-		        muAskIncrease = 0;
-		        sigmaAskIncrease = 1;
-				 muBidIncrease = 0;
-		        sigmaBidIncrease = 1;
-		        muRsiIncrease = 0;
-		        sigmaRsiIncrease = 1;
-		        muAdxIncrease = 0;
-		        sigmaAdxIncrease = 1;
-		        muMacdIncrease = 0;
-		        sigmaMacdIncrease = 1;
-		    }
+//		        muMacdIncrease = historicalMacdIncreases.Average();
+//		        sigmaMacdIncrease = Math.Sqrt(historicalMacdIncreases.Average(macd => Math.Pow(macd - muMacdIncrease, 2)));
+//		    }
+//		    else
+//		    {
+//		        muAskIncrease = 0;
+//		        sigmaAskIncrease = 1;
+//				 muBidIncrease = 0;
+//		        sigmaBidIncrease = 1;
+//		        muRsiIncrease = 0;
+//		        sigmaRsiIncrease = 1;
+//		        muAdxIncrease = 0;
+//		        sigmaAdxIncrease = 1;
+//		        muMacdIncrease = 0;
+//		        sigmaMacdIncrease = 1;
+//		    }
 		
-		    // Recalculate for price decreases
-		    if (historicalAskDecreases.Count > 0)
-		    {
-		         muAskDecrease = historicalAskDecreases.Average();
-		        sigmaAskDecrease= Math.Sqrt(historicalAskDecreases.Average(askvolume => Math.Pow(askvolume - muAskDecrease, 2)));
+//		    // Recalculate for price decreases
+//		    if (historicalAskDecreases.Count > 0)
+//		    {
+//		         muAskDecrease = historicalAskDecreases.Average();
+//		        sigmaAskDecrease= Math.Sqrt(historicalAskDecreases.Average(askvolume => Math.Pow(askvolume - muAskDecrease, 2)));
 				
-				muBidDecrease = historicalBidDecreases.Average();
-		        sigmaBidDecrease = Math.Sqrt(historicalBidDecreases.Average(bidvolume => Math.Pow(bidvolume - muBidDecrease, 2)));
+//				muBidDecrease = historicalBidDecreases.Average();
+//		        sigmaBidDecrease = Math.Sqrt(historicalBidDecreases.Average(bidvolume => Math.Pow(bidvolume - muBidDecrease, 2)));
 		
-		        muRsiDecrease = historicalRsiDecreases.Average();
-		        sigmaRsiDecrease = Math.Sqrt(historicalRsiDecreases.Average(rsi => Math.Pow(rsi - muRsiDecrease, 2)));
+//		        muRsiDecrease = historicalRsiDecreases.Average();
+//		        sigmaRsiDecrease = Math.Sqrt(historicalRsiDecreases.Average(rsi => Math.Pow(rsi - muRsiDecrease, 2)));
 		
-		        muAdxDecrease = historicalAdxDecreases.Average();
-		        sigmaAdxDecrease = Math.Sqrt(historicalAdxDecreases.Average(adx => Math.Pow(adx - muAdxDecrease, 2)));
+//		        muAdxDecrease = historicalAdxDecreases.Average();
+//		        sigmaAdxDecrease = Math.Sqrt(historicalAdxDecreases.Average(adx => Math.Pow(adx - muAdxDecrease, 2)));
 		
-		        muMacdDecrease = historicalMacdDecreases.Average();
-		        sigmaMacdDecrease = Math.Sqrt(historicalMacdDecreases.Average(macd => Math.Pow(macd - muMacdDecrease, 2)));
-		    }
-		    else
-		    {
-		        muAskDecrease = 0;
-		        sigmaAskDecrease = 1;
-				 muBidDecrease = 0;
-		        sigmaBidDecrease= 1;
-		        muRsiDecrease = 0;
-		        sigmaRsiDecrease = 1;
-		        muAdxDecrease = 0;
-		        sigmaAdxDecrease = 1;
-		        muMacdDecrease = 0;
-		        sigmaMacdDecrease = 1;
-		    }
+//		        muMacdDecrease = historicalMacdDecreases.Average();
+//		        sigmaMacdDecrease = Math.Sqrt(historicalMacdDecreases.Average(macd => Math.Pow(macd - muMacdDecrease, 2)));
+//		    }
+//		    else
+//		    {
+//		        muAskDecrease = 0;
+//		        sigmaAskDecrease = 1;
+//				 muBidDecrease = 0;
+//		        sigmaBidDecrease= 1;
+//		        muRsiDecrease = 0;
+//		        sigmaRsiDecrease = 1;
+//		        muAdxDecrease = 0;
+//		        sigmaAdxDecrease = 1;
+//		        muMacdDecrease = 0;
+//		        sigmaMacdDecrease = 1;
+//		    }
 		
-		    // Calculate Bayesian priors based on historical data
-		    CalculateBayesianPriors();
+//		    // Calculate Bayesian priors based on historical data
+//		    CalculateBayesianPriors();
 
-		}
+//		}
 
-		/// <summary>
-		/// Calculates Bayesian priors P(H=1) and P(H=0) based on historical data.
-		/// </summary>
-		private void CalculateBayesianPriors()
-		{
-		    double totalEvents = historicalAskIncreases.Count + historicalAskDecreases.Count;
+//		/// <summary>
+//		/// Calculates Bayesian priors P(H=1) and P(H=0) based on historical data.
+//		/// </summary>
+//		private void CalculateBayesianPriors()
+//		{
+//		    double totalEvents = historicalAskIncreases.Count + historicalAskDecreases.Count;
 		
-		    if (totalEvents == 0)
-		    {
-		        priorPriceIncrease = 0.5;
-		        priorPriceDecrease = 0.5;
-		    }
-		    else
-		    {
-		        priorPriceIncrease = (double)historicalAskIncreases.Count / totalEvents;
-		        priorPriceDecrease = (double)historicalAskDecreases.Count / totalEvents;
-		    }
+//		    if (totalEvents == 0)
+//		    {
+//		        priorPriceIncrease = 0.5;
+//		        priorPriceDecrease = 0.5;
+//		    }
+//		    else
+//		    {
+//		        priorPriceIncrease = (double)historicalAskIncreases.Count / totalEvents;
+//		        priorPriceDecrease = (double)historicalAskDecreases.Count / totalEvents;
+//		    }
 		
-		    // No need to normalize priors here as they will naturally sum to 1
-		}
+//		    // No need to normalize priors here as they will naturally sum to 1
+//		}
 
-		/// <summary>
-		/// Calculates the posterior probabilities P(H=1|D) and P(H=0|D) using Bayes' Theorem, incorporating technical indicators.
-		/// </summary>
-		/// <param name="volumeImbalance">Current volume imbalance (bid - ask volume)</param>
-		/// <param name="totalAskVolume">Total Ask Volume</param>
-		/// <param name="totalBidVolume">Total Bid Volume</param>
-		/// <returns>Tuple containing (P(H=1|D), P(H=0|D))</returns>
-		private (double, double) CalculatePosteriors()
-		{
-		    // Calculate likelihoods based on cumulative buys
-		    double p_d_h1_buys = GaussianPDF(upVolume, muAskIncrease, sigmaAskIncrease); // P(D_buys|H=1)
-		    double p_d_h0_buys = GaussianPDF(upVolume, muAskDecrease, sigmaAskDecrease); // P(D_buys|H=0)
+//		/// <summary>
+//		/// Calculates the posterior probabilities P(H=1|D) and P(H=0|D) using Bayes' Theorem, incorporating technical indicators.
+//		/// </summary>
+//		/// <param name="volumeImbalance">Current volume imbalance (bid - ask volume)</param>
+//		/// <param name="totalAskVolume">Total Ask Volume</param>
+//		/// <param name="totalBidVolume">Total Bid Volume</param>
+//		/// <returns>Tuple containing (P(H=1|D), P(H=0|D))</returns>
+//		private (double, double) CalculatePosteriors()
+//		{
+//		    // Calculate likelihoods based on cumulative buys
+//		    double p_d_h1_buys = GaussianPDF(upVolume, muAskIncrease, sigmaAskIncrease); // P(D_buys|H=1)
+//		    double p_d_h0_buys = GaussianPDF(upVolume, muAskDecrease, sigmaAskDecrease); // P(D_buys|H=0)
 		    
-		    // Calculate likelihoods based on cumulative sells
-		    double p_d_h1_sells = GaussianPDF(downVolume, muBidIncrease, sigmaBidIncrease); // P(D_sells|H=1)
-		    double p_d_h0_sells = GaussianPDF(downVolume, muBidDecrease, sigmaBidDecrease); // P(D_sells|H=0)
+//		    // Calculate likelihoods based on cumulative sells
+//		    double p_d_h1_sells = GaussianPDF(downVolume, muBidIncrease, sigmaBidIncrease); // P(D_sells|H=1)
+//		    double p_d_h0_sells = GaussianPDF(downVolume, muBidDecrease, sigmaBidDecrease); // P(D_sells|H=0)
 		    
-		    // Combine likelihoods (assuming independence)
-		    double p_d_h1 = p_d_h1_buys * p_d_h1_sells; // P(D|H=1)
-		    double p_d_h0 = p_d_h0_buys * p_d_h0_sells; // P(D|H=0)
+//		    // Combine likelihoods (assuming independence)
+//		    double p_d_h1 = p_d_h1_buys * p_d_h1_sells; // P(D|H=1)
+//		    double p_d_h0 = p_d_h0_buys * p_d_h0_sells; // P(D|H=0)
 		
 		
-		    // Incorporate RSI into the likelihood calculation
-		    double rsi = RSI(5, 3)[0] - RSI(5, 3)[1];
-		    double p_rsi_h1 = GaussianPDF(rsi, muRsiIncrease, sigmaRsiIncrease);
-		    double p_rsi_h0 = GaussianPDF(rsi, muRsiDecrease, sigmaRsiDecrease);
-		    p_d_h1 *= p_rsi_h1; // P(D|H=1) *= P(RSI|H=1)
-		    p_d_h0 *= p_rsi_h0; // P(D|H=0) *= P(RSI|H=0)
+//		    // Incorporate RSI into the likelihood calculation
+//		    double rsi = RSI(5, 3)[0] - RSI(5, 3)[1];
+//		    double p_rsi_h1 = GaussianPDF(rsi, muRsiIncrease, sigmaRsiIncrease);
+//		    double p_rsi_h0 = GaussianPDF(rsi, muRsiDecrease, sigmaRsiDecrease);
+//		    p_d_h1 *= p_rsi_h1; // P(D|H=1) *= P(RSI|H=1)
+//		    p_d_h0 *= p_rsi_h0; // P(D|H=0) *= P(RSI|H=0)
 		
-		    // Incorporate ADX into the likelihood calculation
-		    double adx = ADX(5)[0] - ADX(5)[1];
-		    double p_adx_h1 = GaussianPDF(adx, muAdxIncrease, sigmaAdxIncrease);
-		    double p_adx_h0 = GaussianPDF(adx, muAdxDecrease, sigmaAdxDecrease);
-		    p_d_h1 *= p_adx_h1; // P(D|H=1) *= P(ADX|H=1)
-		    p_d_h0 *= p_adx_h0; // P(D|H=0) *= P(ADX|H=0)
+//		    // Incorporate ADX into the likelihood calculation
+//		    double adx = ADX(5)[0] - ADX(5)[1];
+//		    double p_adx_h1 = GaussianPDF(adx, muAdxIncrease, sigmaAdxIncrease);
+//		    double p_adx_h0 = GaussianPDF(adx, muAdxDecrease, sigmaAdxDecrease);
+//		    p_d_h1 *= p_adx_h1; // P(D|H=1) *= P(ADX|H=1)
+//		    p_d_h0 *= p_adx_h0; // P(D|H=0) *= P(ADX|H=0)
 		
-		    // Incorporate MACD into the likelihood calculation
-		    double macd = MACD(12, 26, 9).Diff[0] - MACD(12, 26, 9).Diff[1];
-		    double p_macd_h1 = GaussianPDF(macd, muMacdIncrease, sigmaMacdIncrease);
-		    double p_macd_h0 = GaussianPDF(macd, muMacdDecrease, sigmaMacdDecrease);
-		    p_d_h1 *= p_macd_h1; // P(D|H=1) *= P(MACD|H=1)
-		    p_d_h0 *= p_macd_h0; // P(D|H=0) *= P(MACD|H=0)
+//		    // Incorporate MACD into the likelihood calculation
+//		    double macd = MACD(12, 26, 9).Diff[0] - MACD(12, 26, 9).Diff[1];
+//		    double p_macd_h1 = GaussianPDF(macd, muMacdIncrease, sigmaMacdIncrease);
+//		    double p_macd_h0 = GaussianPDF(macd, muMacdDecrease, sigmaMacdDecrease);
+//		    p_d_h1 *= p_macd_h1; // P(D|H=1) *= P(MACD|H=1)
+//		    p_d_h0 *= p_macd_h0; // P(D|H=0) *= P(MACD|H=0)
 		
 		
-		    // Calculate marginal likelihood P(D)
-		    double p_d = (p_d_h1 * priorPriceIncrease) + (p_d_h0 * priorPriceDecrease);
+//		    // Calculate marginal likelihood P(D)
+//		    double p_d = (p_d_h1 * priorPriceIncrease) + (p_d_h0 * priorPriceDecrease);
 		
-		    // Handle zero marginal likelihood
-		    if (p_d == 0)
-		    {
-		        //Print("[DEBUG] Marginal Likelihood is zero, returning neutral priors.");
-		        return (0.5, 0.5);  // Neutral priors when likelihood is zero
-		    }
+//		    // Handle zero marginal likelihood
+//		    if (p_d == 0)
+//		    {
+//		        //Print("[DEBUG] Marginal Likelihood is zero, returning neutral priors.");
+//		        return (0.5, 0.5);  // Neutral priors when likelihood is zero
+//		    }
 		
-		    // Calculate posterior probabilities
-		    double p_h1_d = (p_d_h1 * priorPriceIncrease) / p_d; // P(H=1|D)
-		    double p_h0_d = (p_d_h0 * priorPriceDecrease) / p_d; // P(H=0|D)
+//		    // Calculate posterior probabilities
+//		    double p_h1_d = (p_d_h1 * priorPriceIncrease) / p_d; // P(H=1|D)
+//		    double p_h0_d = (p_d_h0 * priorPriceDecrease) / p_d; // P(H=0|D)
 		
-		    // Ensure non-zero posteriors
-		    if (p_h1_d < 1e-10) p_h1_d = 1e-10;
-		    if (p_h0_d < 1e-10) p_h0_d = 1e-10;
+//		    // Ensure non-zero posteriors
+//		    if (p_h1_d < 1e-10) p_h1_d = 1e-10;
+//		    if (p_h0_d < 1e-10) p_h0_d = 1e-10;
 		
-		    // Print the posterior probabilities
-		    //Print($"Posteriors: P(H=1|D): {p_h1_d}, P(H=0|D): {p_h0_d}");
+//		    // Print the posterior probabilities
+//		    //Print($"Posteriors: P(H=1|D): {p_h1_d}, P(H=0|D): {p_h0_d}");
 		
-		    return (p_h1_d, p_h0_d);
-		}
+//		    return (p_h1_d, p_h0_d);
+//		}
 
 
 
-	/// <summary>
-	/// Calculates the probability density of a value x for a Gaussian distribution.
-	/// </summary>
-	/// <param name="x">Value</param>
-	/// <param name="mu">Mean</param>
-	/// <param name="sigma">Standard Deviation</param>
-	/// <returns>Probability density P(x)</returns>
-	private double GaussianPDF(double x, double mu, double sigma)
-	{
-	    if (sigma <= 0)
-	    {
+//	/// <summary>
+//	/// Calculates the probability density of a value x for a Gaussian distribution.
+//	/// </summary>
+//	/// <param name="x">Value</param>
+//	/// <param name="mu">Mean</param>
+//	/// <param name="sigma">Standard Deviation</param>
+//	/// <returns>Probability density P(x)</returns>
+//	private double GaussianPDF(double x, double mu, double sigma)
+//	{
+//	    if (sigma <= 0)
+//	    {
 	       
-	        return 0;
-	    }
-	    double exponent = -Math.Pow(x - mu, 2) / (2 * Math.Pow(sigma, 2));
-	    double pdf = (1 / (Math.Sqrt(2 * Math.PI) * sigma)) * Math.Exp(exponent);
+//	        return 0;
+//	    }
+//	    double exponent = -Math.Pow(x - mu, 2) / (2 * Math.Pow(sigma, 2));
+//	    double pdf = (1 / (Math.Sqrt(2 * Math.PI) * sigma)) * Math.Exp(exponent);
 	    
 	 
 	    
-	    return pdf;
-	}
+//	    return pdf;
+//	}
 	
-	// With these lists
-			private List<double> historicalIncreases = new List<double>();
-			private List<double> historicalDecreases = new List<double>();
+//	// With these lists
+//			private List<double> historicalIncreases = new List<double>();
+//			private List<double> historicalDecreases = new List<double>();
 			
-	        // Bayesian parameters
-	        double priorPriceIncrease = 0.5; // P(H=1)
-	        double priorPriceDecrease = 0.5; // P(H=0)
+//	        // Bayesian parameters
+//	        double priorPriceIncrease = 0.5; // P(H=1)
+//	        double priorPriceDecrease = 0.5; // P(H=0)
 	
-	        // Statistical parameters for likelihoods
-	        private double muIncrease = 0;
-	        private double sigmaIncrease = 1;
-	        private double muDecrease = 0;
-	        private double sigmaDecrease = 1;
+//	        // Statistical parameters for likelihoods
+//	        private double muIncrease = 0;
+//	        private double sigmaIncrease = 1;
+//	        private double muDecrease = 0;
+//	        private double sigmaDecrease = 1;
 			
-			  private double muAskIncrease;
-	        private double sigmaAskIncrease;
-	        private double muAskDecrease;
-	        private double sigmaAskDecrease;
+//			  private double muAskIncrease;
+//	        private double sigmaAskIncrease;
+//	        private double muAskDecrease;
+//	        private double sigmaAskDecrease;
 			
-			  private double muBidIncrease;
-	        private double sigmaBidIncrease;
-	        private double muBidDecrease;
-	        private double sigmaBidDecrease;
+//			  private double muBidIncrease;
+//	        private double sigmaBidIncrease;
+//	        private double muBidDecrease;
+//	        private double sigmaBidDecrease;
 			
-			private double muRsiIncrease;
-			private double sigmaRsiIncrease;
-			private double muRsiDecrease;
-			private double sigmaRsiDecrease;
+//			private double muRsiIncrease;
+//			private double sigmaRsiIncrease;
+//			private double muRsiDecrease;
+//			private double sigmaRsiDecrease;
 			
-			private double muAdxIncrease;
-			private double sigmaAdxIncrease;
-			private double muAdxDecrease;
-			private double sigmaAdxDecrease;
+//			private double muAdxIncrease;
+//			private double sigmaAdxIncrease;
+//			private double muAdxDecrease;
+//			private double sigmaAdxDecrease;
 			
-			private double muMacdIncrease;
-			private double sigmaMacdIncrease;
-			private double muMacdDecrease;
-			private double sigmaMacdDecrease;
+//			private double muMacdIncrease;
+//			private double sigmaMacdIncrease;
+//			private double muMacdDecrease;
+//			private double sigmaMacdDecrease;
 			
-			double lastClose = 0;
+//			double lastClose = 0;
 			
-			double p_h1_d;
-			double p_h0_d;
+//			double p_h1_d;
+//			double p_h0_d;
 	    }
 }
 

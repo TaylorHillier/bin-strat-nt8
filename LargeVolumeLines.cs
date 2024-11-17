@@ -159,8 +159,13 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 		
 			[Range(0, int.MaxValue), NinjaScriptProperty]
-        [Display(Name = "Time For Trade (seconds)", Description = "Time at Level to Warrant trade", Order = 3, GroupName = "Entry Conditions")]
-        public double TimeThreshold
+        [Display(Name = "Time Below", Description = "Time at Level to Warrant trade", Order = 3, GroupName = "Entry Conditions")]
+        public double LowTimeThreshold
+       	{ get; set;}
+		
+				[Range(0, int.MaxValue), NinjaScriptProperty]
+        [Display(Name = "Time Above", Description = "Time at Level to Warrant trade", Order = 3, GroupName = "Entry Conditions")]
+        public double HighTimeThreshold
        	{ get; set;}
 		
 			[Range(0, int.MaxValue), NinjaScriptProperty]
@@ -279,7 +284,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 				LineColorDown = Brushes.Red;
                 LineThickness = 1f;
 				PriceRange = 4;
-				TimeThreshold = 2;
+				HighTimeThreshold = 2;
+				LowTimeThreshold = 10;
 				numBars = 20;
             }
             else if (State == State.Configure)
@@ -494,8 +500,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 		double lowBound = 99999999;
 		
 		private List<TimeSpan> timeSpentInZones = new List<TimeSpan>();
-		private const int maxZonePoints = 10;  // Number of points to average
 		
+		// Fields for tracking time spent in zones
+		private double totalTimeSpentInZones = 0.0; // Running total of all time spent in zones (in seconds)
+		private int zoneExitCount = 0; // Counter for the number of times a zone was exited
+		
+		private const int maxZonePoints = 200;  // Number of points to average
+		   double lowSideTime = 0;
+		
+		TimeSpan timeSpent;
+		
+		bool below = false;
+		bool above = false;
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 		    if (!UseAskBid)
@@ -524,133 +540,123 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    }
 		
 		    if (e.MarketDataType == MarketDataType.Last)
-		    {
-		        if (previousPrice == 0)
-		        {
-		            previousPrice = e.Price;
-		        }
-		
-		        // Track current price and last price to determine movement
-		        currentPrice = e.Price;
-		        double lastMove = currentPrice - lastPrice;
-		
-		        // Detect volume accumulation at a particular price level
-		        if (Instrument.FullName.StartsWith("NQ"))
-		        {
-		            // Detect price slowing down within a small range
-		           
-		                // Accumulate volume without significant price movement
-		                if (e.Volume > 0)  // Only accumulate if there's volume
-		                {
-		                    if (e.Price > (e.Ask + e.Bid) / 2)
-		                    {
-		                        upVolume += e.Volume;
-								//downVolume = 0;
-		                    }
-		                    else if (e.Price < (e.Ask + e.Bid) / 2)
-		                    {
-		                        downVolume += e.Volume;
-								//upVolume = 0;
-		                    }
-		                    else
-		                    {
-		                        if (lastMove > 0)
-		                        {
-		                            upVolume += e.Volume;
-		                        }
-		                        else if (lastMove < 0)
-		                        {
-		                            downVolume += e.Volume;
-		                        }
-		                    }
-		                }
-						  
-		            
+			{
+			    if (previousPrice == 0)
+			    {
+			        previousPrice = e.Price;
+			    }
+			
+			    // Track current price and last price to determine movement
+			    currentPrice = e.Price;
+			    double lastMove = currentPrice - lastPrice;
+			
+			    // Detect volume accumulation at a particular price level
+			    if (Instrument.FullName.StartsWith("NQ"))
+			    {
+			        // Accumulate volume without significant price movement
+			        if (e.Volume > 0)  // Only accumulate if there's volume
+			        {
+			            if (e.Price > (e.Ask + e.Bid) / 2)
+			            {
+			                upVolume += e.Volume;
+			            }
+			            else if (e.Price < (e.Ask + e.Bid) / 2)
+			            {
+			                downVolume += e.Volume;
+			            }
+			            else
+			            {
+			                if (lastMove > 0)
+			                {
+			                    upVolume += e.Volume;
+			                }
+			                else if (lastMove < 0)
+			                {
+			                    downVolume += e.Volume;
+			                }
+			            }
+			        }
 					
-					if(currentPrice > highBound){
-						highBound = currentPrice;
-					}
+					        // Update bounds
+			        if (currentPrice > highBound)
+			        {
+			            highBound = currentPrice;
+						above = true;
+						below = false;
+			        }
+			
+			        if (currentPrice < lowBound)
+			        {
+			            lowBound = currentPrice;
+						below = true;
+						above = false;
+			        }
 					
-					if(currentPrice < lowBound){
-						lowBound = currentPrice;
-					}
-		
-					if (highBound - lowBound > PriceRange * TickSize)
-					{
-					    // Calculate time spent in the current zone
-					    TimeSpan timeSpent = e.Time - lastTime;
+					TimeSpan timeChange = e.Time - lastTime;
+			        // If the price range is exceeded, reset zone and accumulate time spent
+			        if (highBound - lowBound > PriceRange * TickSize)
+			        {
+			
+			            // Reset for the next zone
+			            previousPrice = currentPrice;
+			            upVolume = 0;
+			            downVolume = 0;
+			           
+			        }
 					
-					    // Add to the list of time spans and manage list size
-					    if (lastTime != DateTime.MinValue)
-					    {
-					        timeSpentInZones.Add(timeSpent);
-					        if (timeSpentInZones.Count > maxZonePoints)
-					        {
-					            timeSpentInZones.RemoveAt(0);
-					        }
-					    }
 					
-					    // Reset for the next zone
-					    previousPrice = currentPrice;
-					    upVolume = 0;
-					    downVolume = 0;
-					    lowBound = currentPrice;
-					    highBound = currentPrice;
-					    lastTime = e.Time;  // Resetting the lastTime to the current event time
-					}
+			
+			        midRange = (highBound + lowBound) / 2;
+			        totalvolume += e.Volume;
+			
+			        // Compare the current time to the threshold (average time * TimeThreshold)
+			        if((upVolume / downVolume > Threshold && downVolume > 0 || downVolume / upVolume > Threshold && upVolume > 0))
+			        {
 					
-					midRange = (highBound + lowBound) / 2;
-					totalvolume += e.Volume;
+			            if (lastTime != DateTime.MinValue)
+			            {
+			                takeTrade = true;
+			                checkDirection = true;
+			                referencePrice = currentPrice;
+			
+							direction = upVolume > downVolume ? "Up" : "Down";
+			           
+							
+			                // Reset volume variables after deciding to take a trade
+			                upVolume = 0;
+			                downVolume = 0;
+			                totalvolume = 0;
+			
+			                // Reset the time after taking a trade
+			                lastTime = e.Time;  // Set to the current event time
+						
+			            }
+			        }
 					
-					TimeSpan t = e.Time - lastTime;
+					        // If the price range is exceeded, reset zone and accumulate time spent
+			        if (highBound - lowBound > PriceRange * TickSize)
+			        {
+
+			            lowBound = currentPrice;
+			            highBound = currentPrice;
+				
+			        }
 					
-					if (timeSpentInZones.Count > 0)
-					{
-					    // Calculate the average time spent in seconds
-					    double averageTimeSpentSeconds = timeSpentInZones.Average(ts => ts.TotalSeconds);
-					
-					    // Get the current time spent in seconds
-					    double currentTimeSpentSeconds = t.TotalSeconds;
-					
-					    // Compare the current time to the threshold (average time * TimeThreshold)
-					    if ((upVolume - downVolume > Threshold || downVolume - upVolume > Threshold) &&
-					        currentTimeSpentSeconds > averageTimeSpentSeconds * TimeThreshold)
-					    {
-					        if (lastTime != DateTime.MinValue)
-					        {
-					            takeTrade = true;
-					            checkDirection = true;
-					            referencePrice = currentPrice;
-					
-					            direction = upVolume > downVolume ? "Up" : "Down";
-					
-					            Print($"Trade Signal - Direction: {direction}, UpVolume: {upVolume}, DownVolume: {downVolume}, CurrentPrice: {currentPrice}");
-					            Print($"Average Time Spent In Zone: {averageTimeSpentSeconds} seconds, Current Time In Zone: {currentTimeSpentSeconds} seconds");
-					
-					            // Reset volume variables after deciding to take a trade
-					            upVolume = 0;
-					            downVolume = 0;
-					            totalvolume = 0;
-					
-					            // Reset the time after taking a trade
-					            lastTime = DateTime.MinValue;
-					        }
-					    }
-					}
-				}
+			    }
+			
 		
 		        // Add logic to manage streak lines
 		        if (streakLines.Count != 0)
 		        {
 		            foreach (var line in streakLines)
 		            {
-		                if (line.Direction == "Up" && e.Price > line.PriceLevel + profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed)
+		                if (line.Direction == "Up" && e.Price < line.PriceLevel - profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed)
 		                {
 		                    line.HasCrossed = true;
 		                    line.EndBar = CurrentBars[0];
 		                }
 		
-		                if (line.Direction == "Down" && e.Price < line.PriceLevel - profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed)
+		                if (line.Direction == "Down" && e.Price > line.PriceLevel + profitTarget * TickSize && CurrentBar > line.StartBar && !line.HasCrossed)
 		                {
 		                    line.HasCrossed = true;
 		                    line.EndBar = CurrentBars[0];
@@ -1091,484 +1097,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 		    
 		}
-		
-		protected override void OnRender(ChartControl chartControl, ChartScale chartScale)
-		{
-		    base.OnRender(chartControl, chartScale);
-		
-		    if (streakLines == null || streakLines.Count == 0)
-		        return;
-		
-		    // Make a copy of the collection
-		    List<StreakLine> streakLinesCopy;
-		    lock (streakLines)
-		    {
-		        streakLinesCopy = new List<StreakLine>(streakLines);
-		    }
-		
-		    var textFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 12)
-		    {
-		        TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading,
-		        ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Center
-		    };
-		
-		    var metricsFormat = new SharpDX.DirectWrite.TextFormat(Core.Globals.DirectWriteFactory, "Arial", 12)
-		    {
-		        TextAlignment = SharpDX.DirectWrite.TextAlignment.Leading,
-		        ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Near
-		    };
-		
-		    SharpDX.Direct2D1.SolidColorBrush textBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, SharpDX.Color.White);
-		
-		    float metricsX = 10;
-		    float metricsY = 10;
-		
-		    RenderTarget.DrawText($"Trading Mode: {(isTrendMode ? "Trend" : "Regression"):F3}", metricsFormat,
-		        new SharpDX.RectangleF(metricsX, metricsY + 40, 200, 20),
-		        textBrush);
-		
-		    RenderTarget.DrawText($"Up Volume: {upVolume}", metricsFormat,
-		        new SharpDX.RectangleF(metricsX, metricsY + 60, 200, 20),
-		        textBrush);
-		
-		    RenderTarget.DrawText($"Down Volume: {downVolume}", metricsFormat,
-		        new SharpDX.RectangleF(metricsX, metricsY + 80, 200, 20),
-		        textBrush);
-		
-		    foreach (var line in streakLinesCopy)
-		    {
-		        // Calculate bars ago
-		        int barsAgo = CurrentBar - line.StartBar;
-		        if (barsAgo < 0)
-		            continue; // Future bar, skip
-		
-		        // Get the pixel position for the start bar
-		        float x = chartControl.GetXByBarIndex(ChartBars, line.StartBar);
-		        if (float.IsNaN(x))
-		            continue; // Invalid X position
-		
-		        // Get the Y position for the price level
-		        float y = chartScale.GetYByValue(line.PriceLevel);
-		        float endX = chartControl.CanvasRight;
-		
-		        if (line.HasCrossed)
-		        {
-		            endX = chartControl.GetXByBarIndex(ChartBars, line.EndBar);
-		        }
-		
-		        // Create SharpDX brush for the fill with 30% opacity
-		        SharpDX.Color fillColor = line.Direction == "Up" ? SharpDX.Color.Green : SharpDX.Color.Red;
-				Brush brushColor = line.Direction == "Up" ? Brushes.Green : Brushes.Red;
-		        SharpDX.Color semiTransparentColor = new SharpDX.Color(fillColor.R, fillColor.G, fillColor.B, 0.3f);
-		        SharpDX.Direct2D1.Brush fillBrush = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, semiTransparentColor);
-		
-		        // Draw the rectangle based on upBound and downBound
-		        float upY = chartScale.GetYByValue(line.UpBound);
-		        float downY = chartScale.GetYByValue(line.DownBound);
-		        var rect = new SharpDX.RectangleF(x, Math.Min(upY, downY), endX - x, Math.Abs(upY - downY));
-		
-		        // Fill the rectangle with semi-transparent color
-		        RenderTarget.FillRectangle(rect, fillBrush);
-		
-		        // Create dashed stroke style for the outline
-		        var dashedStrokeStyle = new SharpDX.Direct2D1.StrokeStyle(Core.Globals.D2DFactory, new SharpDX.Direct2D1.StrokeStyleProperties
-		        {
-		            DashStyle = SharpDX.Direct2D1.DashStyle.Dash
-		        });
-		
-		        // Draw the rectangle outline with dashed line
-		        RenderTarget.DrawRectangle(rect, fillBrush, LineThickness, dashedStrokeStyle);
-		
-		        // Dispose resources for each loop
-		        fillBrush.Dispose();
-		        dashedStrokeStyle.Dispose();
-		
-		        // Create SharpDX brush for the streak line
-		        SharpDX.Direct2D1.Brush lineBrush = CreateDxBrush(brushColor, RenderTarget);
-		
-		        // Draw the streak line
-		        RenderTarget.DrawLine(
-		            new SharpDX.Vector2(x, y),
-		            new SharpDX.Vector2(endX, y),
-		            lineBrush,
-		            line.HasCrossed ? LineThickness * 3 : LineThickness);
-		
-		        // Dispose of the line brush
-		        lineBrush.Dispose();
-		    }
-		
-		    textBrush.Dispose();
-		    textFormat.Dispose();
-		    metricsFormat.Dispose();
-		}
 
-
-        #region Helper Classes
-
-        // Serialization helper for Brush
-        public static class Serialize
-        {
-            public static string BrushToString(System.Windows.Media.Brush brush)
-            {
-                if (brush is SolidColorBrush solidColorBrush)
-                {
-                    return solidColorBrush.Color.ToString();
-                }
-                return Brushes.Red.Color.ToString(); // Default
-            }
-
-            public static System.Windows.Media.Brush StringToBrush(string brushString)
-            {
-                try
-                {
-                    var color = (System.Windows.Media.Color)ColorConverter.ConvertFromString(brushString);
-                    return new SolidColorBrush(color);
-                }
-                catch
-                {
-                    return Brushes.Red; // Default
-                }
-            }
-        }
-
-        /// <summary>
-        /// Creates a SharpDX.Direct2D1.Brush from a System.Windows.Media.Brush
-        /// </summary>
-        /// <param name="brush">The WPF brush to convert.</param>
-        /// <param name="renderTarget">The render target to create the SharpDX brush.</param>
-        /// <returns>A SharpDX.Direct2D1.Brush.</returns>
-        private SharpDX.Direct2D1.Brush CreateDxBrush(System.Windows.Media.Brush brush, SharpDX.Direct2D1.RenderTarget renderTarget)
-        {
-            if (brush is SolidColorBrush solidColorBrush)
-            {
-                var color = solidColorBrush.Color;
-                // Convert System.Windows.Media.Color to SharpDX.Color
-                SharpDX.Color dxColor = new SharpDX.Color(color.R, color.G, color.B, color.A);
-                return new SharpDX.Direct2D1.SolidColorBrush(renderTarget, dxColor);
-            }
-            // Add more brush conversions if needed
-            // Default to red if not a SolidColorBrush
-            return new SharpDX.Direct2D1.SolidColorBrush(renderTarget, new SharpDX.Color(255, 0, 0, 255));
-        }
-
-        #endregion
-		
-//		private int maxSequenceLength = 1000; // Adjust as needed
-		
-//		private List<double> historicalAskVolumes = new List<double>();  // List to store historical ask volumes
-//		private List<double> historicalBidVolumes = new List<double>();  // List to store historical bid volumes
-		
-//		private List<double> historicalAskIncreases = new List<double>();  // List to store historical ask volumes
-//		private List<double> historicalBidIncreases = new List<double>();  // List to store historical bid volumes
-		
-//		private List<double> historicalAskDecreases = new List<double>();  // List to store historical ask volumes
-//		private List<double> historicalBidDecreases = new List<double>();  // List to store historical bid volumes
-	
-//		private List<double> historicalRsiIncreases = new List<double>();
-//		private List<double> historicalRsiDecreases = new List<double>();
-		
-//		private List<double> historicalAdxIncreases = new List<double>();
-//		private List<double> historicalAdxDecreases = new List<double>();
-		
-//		private List<double> historicalMacdIncreases = new List<double>();
-//		private List<double> historicalMacdDecreases = new List<double>();
-
-//		private List<(int Observation, double AskVolume, double BidVolume, double Rsi, double Adx, double Macd)> observationData = new List<(int, double, double, double, double, double)>();
-
-//		private void UpdateHistoricalData(bool priceIncreased)
-//		{
-//		    // Calculate technical indicators
-//		    double rsi = RSI(5, 3)[0] - RSI(5, 3)[1];
-//		    double adx =  ADX(5)[0] - ADX(5)[1];
-//		    double macd = MACD(12, 26, 9).Diff[0] - MACD(12, 26, 9).Diff[1];
-
-//		    // Calculate volume imbalance
-//		    double totalBidVolume = upVolume;
-//		    double totalAskVolume = downVolume;
-		
-//		    // Add the observation, ask, bid volumes, and technical indicators to observationData
-//		    int observation = priceIncreased ? 1 : 0;
-//		    observationData.Add((observation, totalAskVolume, totalBidVolume, rsi, adx, macd));
-		
-//		    // Update historical data based on price movement 
-//		    if (priceIncreased)
-//		    {
-//		        historicalAskIncreases.Add(totalAskVolume);
-//		        historicalBidIncreases.Add(totalBidVolume);
-//		        historicalRsiIncreases.Add(rsi);
-//		        historicalAdxIncreases.Add(adx);
-//		        historicalMacdIncreases.Add(macd);
-//		    }
-//		    else
-//		    {
-//		        historicalAskDecreases.Add(totalAskVolume);
-//		        historicalBidDecreases.Add(totalBidVolume);
-//		        historicalRsiDecreases.Add(rsi);
-//		        historicalAdxDecreases.Add(adx);
-//		        historicalMacdDecreases.Add(macd);
-//		    }
-		
-//		    // Maintain the maximum sequence length
-//		    if (observationData.Count > maxSequenceLength)
-//		    {
-//		        // Remove the oldest observation
-//		        var oldestObservation = observationData[0];
-//		        observationData.RemoveAt(0);
-		
-//		        bool wasPriceIncrease = oldestObservation.Observation == 1;
-		
-//		        if (wasPriceIncrease)
-//		        {
-//		            // Remove data from increases lists
-//		            historicalAskIncreases.RemoveAt(0);
-//		            historicalBidIncreases.RemoveAt(0);
-//		            historicalRsiIncreases.RemoveAt(0);
-//		            historicalAdxIncreases.RemoveAt(0);
-//		            historicalMacdIncreases.RemoveAt(0);
-//		        }
-//		        else
-//		        {
-//		            // Remove data from decreases lists
-//		            historicalAskDecreases.RemoveAt(0);
-//		            historicalBidDecreases.RemoveAt(0);
-//		            historicalRsiDecreases.RemoveAt(0);
-//		            historicalAdxDecreases.RemoveAt(0);
-//		            historicalMacdDecreases.RemoveAt(0);
-//		        }
-//		    }
-		
-//		    // Recalculate statistical parameters and Bayesian priors
-//		    RecalculateStatistics();
-//		}
-		
-
-//		private void RecalculateStatistics()
-//		{
-//		    // Recalculate for price increases
-//		    if (historicalAskIncreases.Count > 0)
-//		    {
-//		        muAskIncrease = historicalAskIncreases.Average();
-//		        sigmaAskIncrease = Math.Sqrt(historicalAskIncreases.Average(askvolume => Math.Pow(askvolume - muAskIncrease, 2)));
-				
-//				muBidIncrease = historicalBidIncreases.Average();
-//		        sigmaBidIncrease = Math.Sqrt(historicalBidIncreases.Average(bidvolume => Math.Pow(bidvolume - muBidIncrease, 2)));
-		
-//		        muRsiIncrease = historicalRsiIncreases.Average();
-//		        sigmaRsiIncrease = Math.Sqrt(historicalRsiIncreases.Average(rsi => Math.Pow(rsi - muRsiIncrease, 2)));
-		
-//		        muAdxIncrease = historicalAdxIncreases.Average();
-//		        sigmaAdxIncrease = Math.Sqrt(historicalAdxIncreases.Average(adx => Math.Pow(adx - muAdxIncrease, 2)));
-		
-//		        muMacdIncrease = historicalMacdIncreases.Average();
-//		        sigmaMacdIncrease = Math.Sqrt(historicalMacdIncreases.Average(macd => Math.Pow(macd - muMacdIncrease, 2)));
-//		    }
-//		    else
-//		    {
-//		        muAskIncrease = 0;
-//		        sigmaAskIncrease = 1;
-//				 muBidIncrease = 0;
-//		        sigmaBidIncrease = 1;
-//		        muRsiIncrease = 0;
-//		        sigmaRsiIncrease = 1;
-//		        muAdxIncrease = 0;
-//		        sigmaAdxIncrease = 1;
-//		        muMacdIncrease = 0;
-//		        sigmaMacdIncrease = 1;
-//		    }
-		
-//		    // Recalculate for price decreases
-//		    if (historicalAskDecreases.Count > 0)
-//		    {
-//		         muAskDecrease = historicalAskDecreases.Average();
-//		        sigmaAskDecrease= Math.Sqrt(historicalAskDecreases.Average(askvolume => Math.Pow(askvolume - muAskDecrease, 2)));
-				
-//				muBidDecrease = historicalBidDecreases.Average();
-//		        sigmaBidDecrease = Math.Sqrt(historicalBidDecreases.Average(bidvolume => Math.Pow(bidvolume - muBidDecrease, 2)));
-		
-//		        muRsiDecrease = historicalRsiDecreases.Average();
-//		        sigmaRsiDecrease = Math.Sqrt(historicalRsiDecreases.Average(rsi => Math.Pow(rsi - muRsiDecrease, 2)));
-		
-//		        muAdxDecrease = historicalAdxDecreases.Average();
-//		        sigmaAdxDecrease = Math.Sqrt(historicalAdxDecreases.Average(adx => Math.Pow(adx - muAdxDecrease, 2)));
-		
-//		        muMacdDecrease = historicalMacdDecreases.Average();
-//		        sigmaMacdDecrease = Math.Sqrt(historicalMacdDecreases.Average(macd => Math.Pow(macd - muMacdDecrease, 2)));
-//		    }
-//		    else
-//		    {
-//		        muAskDecrease = 0;
-//		        sigmaAskDecrease = 1;
-//				 muBidDecrease = 0;
-//		        sigmaBidDecrease= 1;
-//		        muRsiDecrease = 0;
-//		        sigmaRsiDecrease = 1;
-//		        muAdxDecrease = 0;
-//		        sigmaAdxDecrease = 1;
-//		        muMacdDecrease = 0;
-//		        sigmaMacdDecrease = 1;
-//		    }
-		
-//		    // Calculate Bayesian priors based on historical data
-//		    CalculateBayesianPriors();
-
-//		}
-
-//		/// <summary>
-//		/// Calculates Bayesian priors P(H=1) and P(H=0) based on historical data.
-//		/// </summary>
-//		private void CalculateBayesianPriors()
-//		{
-//		    double totalEvents = historicalAskIncreases.Count + historicalAskDecreases.Count;
-		
-//		    if (totalEvents == 0)
-//		    {
-//		        priorPriceIncrease = 0.5;
-//		        priorPriceDecrease = 0.5;
-//		    }
-//		    else
-//		    {
-//		        priorPriceIncrease = (double)historicalAskIncreases.Count / totalEvents;
-//		        priorPriceDecrease = (double)historicalAskDecreases.Count / totalEvents;
-//		    }
-		
-//		    // No need to normalize priors here as they will naturally sum to 1
-//		}
-
-//		/// <summary>
-//		/// Calculates the posterior probabilities P(H=1|D) and P(H=0|D) using Bayes' Theorem, incorporating technical indicators.
-//		/// </summary>
-//		/// <param name="volumeImbalance">Current volume imbalance (bid - ask volume)</param>
-//		/// <param name="totalAskVolume">Total Ask Volume</param>
-//		/// <param name="totalBidVolume">Total Bid Volume</param>
-//		/// <returns>Tuple containing (P(H=1|D), P(H=0|D))</returns>
-//		private (double, double) CalculatePosteriors()
-//		{
-//		    // Calculate likelihoods based on cumulative buys
-//		    double p_d_h1_buys = GaussianPDF(upVolume, muAskIncrease, sigmaAskIncrease); // P(D_buys|H=1)
-//		    double p_d_h0_buys = GaussianPDF(upVolume, muAskDecrease, sigmaAskDecrease); // P(D_buys|H=0)
-		    
-//		    // Calculate likelihoods based on cumulative sells
-//		    double p_d_h1_sells = GaussianPDF(downVolume, muBidIncrease, sigmaBidIncrease); // P(D_sells|H=1)
-//		    double p_d_h0_sells = GaussianPDF(downVolume, muBidDecrease, sigmaBidDecrease); // P(D_sells|H=0)
-		    
-//		    // Combine likelihoods (assuming independence)
-//		    double p_d_h1 = p_d_h1_buys * p_d_h1_sells; // P(D|H=1)
-//		    double p_d_h0 = p_d_h0_buys * p_d_h0_sells; // P(D|H=0)
-		
-		
-//		    // Incorporate RSI into the likelihood calculation
-//		    double rsi = RSI(5, 3)[0] - RSI(5, 3)[1];
-//		    double p_rsi_h1 = GaussianPDF(rsi, muRsiIncrease, sigmaRsiIncrease);
-//		    double p_rsi_h0 = GaussianPDF(rsi, muRsiDecrease, sigmaRsiDecrease);
-//		    p_d_h1 *= p_rsi_h1; // P(D|H=1) *= P(RSI|H=1)
-//		    p_d_h0 *= p_rsi_h0; // P(D|H=0) *= P(RSI|H=0)
-		
-//		    // Incorporate ADX into the likelihood calculation
-//		    double adx = ADX(5)[0] - ADX(5)[1];
-//		    double p_adx_h1 = GaussianPDF(adx, muAdxIncrease, sigmaAdxIncrease);
-//		    double p_adx_h0 = GaussianPDF(adx, muAdxDecrease, sigmaAdxDecrease);
-//		    p_d_h1 *= p_adx_h1; // P(D|H=1) *= P(ADX|H=1)
-//		    p_d_h0 *= p_adx_h0; // P(D|H=0) *= P(ADX|H=0)
-		
-//		    // Incorporate MACD into the likelihood calculation
-//		    double macd = MACD(12, 26, 9).Diff[0] - MACD(12, 26, 9).Diff[1];
-//		    double p_macd_h1 = GaussianPDF(macd, muMacdIncrease, sigmaMacdIncrease);
-//		    double p_macd_h0 = GaussianPDF(macd, muMacdDecrease, sigmaMacdDecrease);
-//		    p_d_h1 *= p_macd_h1; // P(D|H=1) *= P(MACD|H=1)
-//		    p_d_h0 *= p_macd_h0; // P(D|H=0) *= P(MACD|H=0)
-		
-		
-//		    // Calculate marginal likelihood P(D)
-//		    double p_d = (p_d_h1 * priorPriceIncrease) + (p_d_h0 * priorPriceDecrease);
-		
-//		    // Handle zero marginal likelihood
-//		    if (p_d == 0)
-//		    {
-//		        //Print("[DEBUG] Marginal Likelihood is zero, returning neutral priors.");
-//		        return (0.5, 0.5);  // Neutral priors when likelihood is zero
-//		    }
-		
-//		    // Calculate posterior probabilities
-//		    double p_h1_d = (p_d_h1 * priorPriceIncrease) / p_d; // P(H=1|D)
-//		    double p_h0_d = (p_d_h0 * priorPriceDecrease) / p_d; // P(H=0|D)
-		
-//		    // Ensure non-zero posteriors
-//		    if (p_h1_d < 1e-10) p_h1_d = 1e-10;
-//		    if (p_h0_d < 1e-10) p_h0_d = 1e-10;
-		
-//		    // Print the posterior probabilities
-//		    //Print($"Posteriors: P(H=1|D): {p_h1_d}, P(H=0|D): {p_h0_d}");
-		
-//		    return (p_h1_d, p_h0_d);
-//		}
-
-
-
-//	/// <summary>
-//	/// Calculates the probability density of a value x for a Gaussian distribution.
-//	/// </summary>
-//	/// <param name="x">Value</param>
-//	/// <param name="mu">Mean</param>
-//	/// <param name="sigma">Standard Deviation</param>
-//	/// <returns>Probability density P(x)</returns>
-//	private double GaussianPDF(double x, double mu, double sigma)
-//	{
-//	    if (sigma <= 0)
-//	    {
-	       
-//	        return 0;
-//	    }
-//	    double exponent = -Math.Pow(x - mu, 2) / (2 * Math.Pow(sigma, 2));
-//	    double pdf = (1 / (Math.Sqrt(2 * Math.PI) * sigma)) * Math.Exp(exponent);
-	    
-	 
-	    
-//	    return pdf;
-//	}
-	
-//	// With these lists
-//			private List<double> historicalIncreases = new List<double>();
-//			private List<double> historicalDecreases = new List<double>();
-			
-//	        // Bayesian parameters
-//	        double priorPriceIncrease = 0.5; // P(H=1)
-//	        double priorPriceDecrease = 0.5; // P(H=0)
-	
-//	        // Statistical parameters for likelihoods
-//	        private double muIncrease = 0;
-//	        private double sigmaIncrease = 1;
-//	        private double muDecrease = 0;
-//	        private double sigmaDecrease = 1;
-			
-//			  private double muAskIncrease;
-//	        private double sigmaAskIncrease;
-//	        private double muAskDecrease;
-//	        private double sigmaAskDecrease;
-			
-//			  private double muBidIncrease;
-//	        private double sigmaBidIncrease;
-//	        private double muBidDecrease;
-//	        private double sigmaBidDecrease;
-			
-//			private double muRsiIncrease;
-//			private double sigmaRsiIncrease;
-//			private double muRsiDecrease;
-//			private double sigmaRsiDecrease;
-			
-//			private double muAdxIncrease;
-//			private double sigmaAdxIncrease;
-//			private double muAdxDecrease;
-//			private double sigmaAdxDecrease;
-			
-//			private double muMacdIncrease;
-//			private double sigmaMacdIncrease;
-//			private double muMacdDecrease;
-//			private double sigmaMacdDecrease;
-			
-//			double lastClose = 0;
-			
-//			double p_h1_d;
-//			double p_h0_d;
 	    }
 }
 

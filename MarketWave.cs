@@ -34,12 +34,14 @@ namespace NinjaTrader.NinjaScript.Strategies
     {
         #region Variables
         private Dictionary<double, PriceLevelData> priceLevels;
+		private Dictionary<int, double> deltaValues = new Dictionary<int, double>();
         private Dictionary<int, Dictionary<double, PriceLevelData>> priceLevelsPerBar;
         private int lastBarIndex = -1;
         private double currentPriceLevel = 0.0;
         private DateTime levelEntryTime = DateTime.MinValue;
         private double barLow = 0.0;
         private double aggregationSize = 0.25;
+		private double delta;
 		
 		public string  atmStrategyId			= string.Empty;
 		public string  orderId					= string.Empty;
@@ -66,9 +68,15 @@ namespace NinjaTrader.NinjaScript.Strategies
         public int TickAggregation { get; set; }
 
         [NinjaScriptProperty]
-        [Range(0.0, double.MaxValue)]
-        [Display(Name = "Importance Threshold", Order = 2, GroupName = "Trade Logic")]
-        public double ImportanceThreshold { get; set; }
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Importance Threshold Highside", Order = 2, GroupName = "Trade Logic")]
+		public double HighThreshold
+		{ get; set; }
+		
+			[NinjaScriptProperty]
+		[Display(Name = "Importance Threshold Lowside", Order = 3, GroupName = "Trade Logic")]
+		public double LowThreshold
+		{ get; set; }
 		
 		[NinjaScriptProperty]
 		[Display(Name="ATMStrategy", Order=1, GroupName="ATM Strategy")]
@@ -84,17 +92,18 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Name = "MarketWaveStrategy";
                 Calculate = Calculate.OnEachTick;
                 TickAggregation = 4;
-                ImportanceThreshold = 1.0;
-                IsOverlay = false;
+               	HighThreshold = 8.0;
+				LowThreshold = -4.0;
 				ATMStrategy = "NQ Hyperscalp";
-				ImportanceThreshold = 50;
+				
 				TickAggregation = 4;
             }
             else if (State == State.Configure)
             {
                 priceLevels = new Dictionary<double, PriceLevelData>();
                 priceLevelsPerBar = new Dictionary<int, Dictionary<double, PriceLevelData>>();
-            }else if (State == State.Historical)
+            }
+			else if (State == State.Historical)
 			{
 			if (UserControlCollection.Contains(myGrid))
 					return;
@@ -204,36 +213,29 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
         }
 
-       	protected override void OnMarketData(MarketDataEventArgs e)
+		bool tradeTaken = false;
+		private double highestPriceLevel = double.MinValue;
+		private double lowestPriceLevel = double.MaxValue;
+		private int MaxPriceLevels = 10; // Adjust as needed
+
+       		protected override void OnMarketData(MarketDataEventArgs e)
 		{
-		    if (CurrentBar < 2) return;
+			
+		    if (CurrentBar < 3) return;
 		
 		    int barIndex = CurrentBar;
 		
 		    // Check if a new bar has started
 		    if (barIndex != lastBarIndex)
 		    {
-		        // Handle remaining time at the last price level
-		        if (currentPriceLevel != 0.0 && levelEntryTime != DateTime.MinValue)
-		        {
-		            // Use the time of the last market data event
-		            DateTime lastEventTime = e.Time;
-		
-		            // Calculate time spent at the last price level
-		            TimeSpan deltaTime = lastEventTime - levelEntryTime;
-		            double deltaSeconds = deltaTime.TotalSeconds;
-		
-		            if (!priceLevels.ContainsKey(currentPriceLevel))
-		            {
-		                priceLevels[currentPriceLevel] = new PriceLevelData();
-		            }
-		            priceLevels[currentPriceLevel].TimeSpent += deltaSeconds;
-		        }
-		
+	
 		        // Save data for the completed bar
 		        if (priceLevels.Count > 0 && lastBarIndex >= 0)
 		        {
+
 		            priceLevelsPerBar[lastBarIndex] = new Dictionary<double, PriceLevelData>(priceLevels);
+					deltaValues[lastBarIndex] = delta;
+				
 		        }
 		
 		        // Reset variables for the new bar
@@ -242,6 +244,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        levelEntryTime = DateTime.MinValue;
 		        lastBarIndex = barIndex;
 		        levelEntryTime = e.Time;
+				tradeTaken = false;
 		    }
 		
 		    // Only process MarketDataType.Last for price and volume updates
@@ -253,65 +256,95 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    DateTime eventTime = e.Time;
 		
 		    // Get the aggregated price level
-		    double newPriceLevel = GetAggregatedPriceLevel(price);
+		    double newPriceLevel = Math.Round(GetAggregatedPriceLevel(price), 2); // Round to 2 decimal places
 		
-		    if (currentPriceLevel == 0.0)
-		    {
-		        // First time setting currentPriceLevel
-		        currentPriceLevel = newPriceLevel;
-		        levelEntryTime = eventTime;
-		    }
-		    else if (newPriceLevel != currentPriceLevel)
-		    {
-		        // Price level has changed
-		        // Calculate time spent at the previous level
-		        TimeSpan deltaTime = eventTime - levelEntryTime;
-		        double deltaSeconds = deltaTime.TotalSeconds;
+		   if (Math.Abs(newPriceLevel - currentPriceLevel) >= TickSize) // Replace TickSize with your desired threshold
+			{
+			
+			    // Price level has changed
+			    TimeSpan deltaTime = eventTime - levelEntryTime;
+			    double deltaSeconds = deltaTime.TotalSeconds;
+			
+			    if (!priceLevels.ContainsKey(currentPriceLevel))
+			    {
+			        priceLevels[currentPriceLevel] = new PriceLevelData();
+			    }
+			    priceLevels[currentPriceLevel].TimeSpent += deltaSeconds;
+			
+			    if (newPriceLevel > currentPriceLevel)
+			    {
+			        priceLevels[currentPriceLevel].CurrentStreak++;
+			    }
+			    else if (newPriceLevel < currentPriceLevel)
+			    {
+			        priceLevels[currentPriceLevel].CurrentStreak--;
+			    }
+			
+			    currentPriceLevel = newPriceLevel;
+			    levelEntryTime = eventTime;
+			}
+
 		
-		        if (!priceLevels.ContainsKey(currentPriceLevel))
-		        {
-		            priceLevels[currentPriceLevel] = new PriceLevelData();
-		        }
-		        priceLevels[currentPriceLevel].TimeSpent += deltaSeconds;
-		
-		        // Update currentPriceLevel and levelEntryTime
-		        currentPriceLevel = newPriceLevel;
-		        levelEntryTime = eventTime;
-		    }
-		
+			
 		    // Update volume at the current price level
 		    if (!priceLevels.ContainsKey(currentPriceLevel))
 		    {
 		        priceLevels[currentPriceLevel] = new PriceLevelData();
+				
 		    }
 		
 		    if (price >= midPrice)
 		    {
+	
 		        // Trade occurred at ask side
 		        priceLevels[currentPriceLevel].AskVolume += volume;
+				
+				priceLevels[currentPriceLevel].LastTrade = "Long";
+				if(e.Volume > 10){
+					priceLevels[currentPriceLevel].LargeOrders+= e.Volume;
+				}
 		    }
 		    else
 		    {
+		
 		        // Trade occurred at bid side
 		        priceLevels[currentPriceLevel].BidVolume += volume;
+			
+				priceLevels[currentPriceLevel].LastTrade = "Short";
+				if(e.Volume > 10){
+					priceLevels[currentPriceLevel].LargeOrders+= e.Volume;
+				}
 		    }
 			
-			CalculateImportanceScores(priceLevels);
+			
+			
+			double totalAsk = priceLevels.Values.Sum(pl => pl.AskVolume);
+			double totalBid = priceLevels.Values.Sum(pl => pl.BidVolume);
+			delta = totalAsk - totalBid;
+			
+//			UpdateHistoricalData(priceLevels);
+			
+//			if(historicalRatios.Count > 0 ){
+			//CalculateImportanceScores(priceLevels);
+			
 		
 		    // Check for trading opportunity at the current price level
-		    if (priceLevels.TryGetValue(currentPriceLevel, out var currentLevelData))
+		    if (priceLevels.TryGetValue(currentPriceLevel, out var currentLevelData) && !tradeTaken)
 		    {
 
-		        if (currentLevelData.ImportanceScore >= ImportanceThreshold)
+		        if (currentLevelData.CurrentStreak >= HighThreshold || currentLevelData.CurrentStreak <= LowThreshold)
 		        {
+				
+					bool askImbalance = currentLevelData.AskVolume > currentLevelData.BidVolume;
+					bool bidImbalance = currentLevelData.BidVolume > currentLevelData.AskVolume;
 					
 					 // Manage ATM strategies and orders
 		            if (orderId.Length > 0 || atmStrategyId.Length > 0 || State != State.Realtime || Position.MarketPosition != MarketPosition.Flat)
 		                return;
 		
-					if (currentLevelData.AskVolume > currentLevelData.BidVolume)
-		            {
-			            if (isTrendMode && isLongMode)
+					Print($"Trade Taken. Ask Volume: {currentLevelData.AskVolume}, Bid Volume: {currentLevelData.BidVolume}, Importance Score: {currentLevelData.ImportanceScore}, Time at level {currentLevelData.TimeSpent}, Ratio: ({Math.Max(currentLevelData.BidVolume,currentLevelData.AskVolume)} / {Math.Min(currentLevelData.BidVolume,currentLevelData.AskVolume)})");
+				
+			            if (isLongMode &&  currentLevelData.CurrentStreak >= HighThreshold && askImbalance)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -329,9 +362,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                            isAtmStrategyCreated = true;
 			                        }
 			                    });
+							//resetButtons();
+							tradeTaken = true;
 			                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
 			            } 
-						else if (isRegressionMode && isLongMode)
+						
+						if (isLongMode &&  currentLevelData.CurrentStreak <= LowThreshold && askImbalance)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -349,14 +385,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                            isAtmStrategyCreated = true;
 			                        }
 			                    });
+							//resetButtons();
+							tradeTaken = true;
 			                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
-			            }
-					}
+			            } 
+			
+			
 						
-						
-					 if (currentLevelData.BidVolume > currentLevelData.AskVolume)
-		             {
-			            if (isTrendMode && isShortMode)
+					
+			            if (isShortMode && currentLevelData.CurrentStreak <= LowThreshold && bidImbalance)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -374,12 +411,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                            isAtmStrategyCreated = true;
 			                        }
 			                    });
+							//resetButtons();
+								tradeTaken = true;
 			                Print($"[{Time[0]}] Entering Short Position (Auto Arm)");
 			            }
 					
 					
-		
-			            if (isRegressionMode && isShortMode)
+						 if (isShortMode && currentLevelData.CurrentStreak >= HighThreshold && bidImbalance)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -397,80 +435,212 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                            isAtmStrategyCreated = true;
 			                        }
 			                    });
+							//resetButtons();
+								tradeTaken = true;
 			                Print($"[{Time[0]}] Entering Short Position (Auto Arm)");
 			            }
-					 }
+		
+			         
+					 
 		        }
+		    }
+			
+			  // Manage ATM Strategies and Orders
+		    if (State == State.Realtime)
+		    {
+		        if (!isAtmStrategyCreated)
+		            return;
+		
+		        // Check for a pending entry order
+		        if (orderId.Length > 0)
+		        {
+		            string[] status = GetAtmStrategyEntryOrderStatus(orderId);
+		
+		            // If the order state is terminal, reset the order id value
+		            if (status.GetLength(0) > 0 && (status[2] == "Filled" || status[2] == "Cancelled" || status[2] == "Rejected"))
+		                orderId = string.Empty;
+		        }
+		        // If the strategy has terminated, reset the strategy id
+		        else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId) == Cbi.MarketPosition.Flat)
+		            atmStrategyId = string.Empty;
+		
+//		        if (atmStrategyId.Length > 0 && UseLimit)
+//		        {
+//		            if (GetAtmStrategyMarketPosition(atmStrategyId) == Cbi.MarketPosition.Flat &&
+//		                (e.Price > midRange + 20 * TickSize || e.Price < midRange - 20 * TickSize))
+//		            {
+//		                AtmStrategyClose(atmStrategyId);
+//		            }
+//		        }
 		    }
 		}
 		
-
-       private void CalculateImportanceScores(Dictionary<double, PriceLevelData> priceLevels)
+		private List<HistoricalData> historicalRatios = new List<HistoricalData>();
+		
+		private void CalculateImportanceScores(Dictionary<double, PriceLevelData> priceLevels)
 		{
-		    double maxTotalVolume = priceLevels.Values.Max(pl => pl.BidVolume + pl.AskVolume);
-		    double totalTimeSpent = priceLevels.Values.Sum(pl => pl.TimeSpent);
+		    // Check for sufficient data
+		    if (historicalRatios.Count < 2)
+		    {
+		        Print("Not enough historical data to calculate importance scores.");
+		        return;
+		    }
+		
+		    // Extract imbalance ratios
+		    List<double> imbalanceRatios = historicalRatios.Select(hr => hr.ImbalanceRatio).ToList();
+		
+		    double meanRatio = imbalanceRatios.Average();
+		    double stdDevRatio = CalculateStandardDeviation(imbalanceRatios, meanRatio);
+		
+		    if (stdDevRatio == 0) stdDevRatio = 0.0001;
 		
 		    foreach (var pl in priceLevels)
 		    {
-		        double totalVolume = pl.Value.BidVolume + pl.Value.AskVolume;
+		           double priceLevel = pl.Key;
+		        double bidVolume = pl.Value.BidVolume;
+		        double askVolume = pl.Value.AskVolume;
+		        double timeSpent = pl.Value.TimeSpent;
+					double largeOrders = pl.Value.LargeOrders > 1 ? pl.Value.LargeOrders : 1;
+				double volumeStreak = pl.Value.LongestStreak > 1 ? pl.Value.LongestStreak : 1;
+		        double imbalanceVolume = Math.Abs(bidVolume - askVolume);
 		
-		        // Avoid division by zero
-		        if (totalVolume == 0 || totalTimeSpent == 0 || maxTotalVolume == 0)
+		        // Calculate imbalance ratio
+		        double totalVolume = bidVolume + askVolume;
+		        double imbalanceRatio = 0;
+		
+		          if (totalVolume > 0 &&  Math.Min(bidVolume,askVolume) > 0)
+		         {
+		           imbalanceRatio = totalVolume / 2 + 2 * volumeStreak + 2 * largeOrders  + 2 * imbalanceVolume;
+		        }
+		        else
 		        {
-		            pl.Value.ImportanceScore = 0;
+		            // Skip this price level as there's no volume
 		            continue;
 		        }
 		
-		        // Calculate Imbalance Ratio
-		        double imbalance = Math.Abs(pl.Value.AskVolume - pl.Value.BidVolume);
-		        double imbalanceRatio = imbalance / totalVolume;
+		        double zRatio = (imbalanceRatio - meanRatio) / stdDevRatio;
 		
-		        // Normalize total volume
-		        double normalizedVolume = totalVolume / maxTotalVolume;
+		        pl.Value.ImportanceScore = zRatio;
 		
-		        // Normalize time spent and apply reverse bell curve
-		        double normalizedTime = pl.Value.TimeSpent / totalTimeSpent;
-		        double timeImpact = (1 - Math.Pow(1 - normalizedTime, 2)) * (1 - Math.Pow(normalizedTime, 2));
-		
-		        // Calculate level importance score
-		        pl.Value.ImportanceScore = normalizedVolume * imbalanceRatio * timeImpact * 100; // Scale by 100 for readability
-		        Print($"Level {pl.Key}: Score {pl.Value.ImportanceScore}");
+		        // Debugging
+		       // Print($"Price Level: {pl.Key}, ImbalanceRatio: {imbalanceRatio}, zRatio: {zRatio}, ImportanceScore: {pl.Value.ImportanceScore}, Volume Streak: {volumeStreak}, Large Orders: {largeOrders}");
 		    }
 		}
+			
+		private double CalculateStandardDeviation(List<double> values, double mean)
+		{
+		    double variance = values.Sum(v => Math.Pow(v - mean, 2)) / values.Count;
+		    return Math.Sqrt(variance);
+		}
+				
+		private void UpdateHistoricalData(Dictionary<double, PriceLevelData> priceLevels)
+		{
+		    foreach (var pl in priceLevels)
+		    {
+		        double priceLevel = pl.Key;
+		        double bidVolume = pl.Value.BidVolume;
+		        double askVolume = pl.Value.AskVolume;
+		        double timeSpent = pl.Value.TimeSpent;
+				double largeOrders = pl.Value.LargeOrders > 1 ? pl.Value.LargeOrders : 1;
+				double volumeStreak = pl.Value.LongestStreak > 1 ? pl.Value.LongestStreak : 1;
+		        double imbalanceVolume = Math.Abs(bidVolume - askVolume);
+		
+		        // Calculate imbalance ratio
+		        double totalVolume = bidVolume + askVolume;
+		        double imbalanceRatio = 0;
+		
+		          if (totalVolume > 0 &&  Math.Min(bidVolume,askVolume) > 0)
+		         {
+		              imbalanceRatio = totalVolume / 2 + 2 * volumeStreak + 2 * largeOrders  + 2 * imbalanceVolume;
+		        }
+		        else
+		        {
+		            // Skip this price level as there's no volume
+		            continue;
+		        }
+		
+		        // Check if the price level exists in historicalRatios
+		        int existingIndex = historicalRatios.FindIndex(hr => hr.PriceLevel == priceLevel);
+		
+		        if (existingIndex != -1)
+		        {
+		            // Update the existing entry for the price level
+		            historicalRatios[existingIndex].ImbalanceRatio = imbalanceRatio;
+		        }
+		        else
+		        {
+		            // Add a new entry for this price level
+		            historicalRatios.Add(new HistoricalData
+		            {
+		                PriceLevel = priceLevel,
+		                ImbalanceRatio = imbalanceRatio
+		            });
+		        }
+		    }
+		
+		    // Optionally limit the size of historical data
+		    int maxHistorySize = 20; // Adjust as needed
+		    if (historicalRatios.Count > maxHistorySize)
+		    {
+		        int removeCount = historicalRatios.Count - maxHistorySize;
+		        historicalRatios.RemoveRange(0, removeCount);
+		    }
+		}
+		
+		private class HistoricalData
+		{
+		    public double PriceLevel { get; set; }
+		    public double ImbalanceRatio { get; set; }
+		}
 
-        private double GetAggregatedPriceLevel(double price)
-        {
-            // Ensure TickAggregation is at least 1
-            int tickAggregation = Math.Max(1, TickAggregation);
+			
+		private double GetAggregatedPriceLevel(double price)
+		{
+		    // Ensure TickAggregation is at least 1
+		    int tickAggregation = Math.Max(1, TickAggregation);
+		
+		    // Adjust price slightly to avoid floating-point precision issues
+		    double adjustedPrice = price + TickSize * 1e-6;
+		
+		    // Convert price to integer ticks using Math.Floor
+		    int priceInTicks = (int)Math.Floor(adjustedPrice / TickSize);
+		
+		    // Calculate zone index
+		    int zoneIndex = priceInTicks / tickAggregation;
+		
+		    // Calculate the aggregated price in ticks
+		    int aggregatedPriceInTicks = zoneIndex * tickAggregation;
+		
+		    // Convert back to price
+		    double aggregatedPrice = aggregatedPriceInTicks * TickSize;
+		
+		    return aggregatedPrice;
+		}
 
-            // Convert price to integer ticks
-            int priceInTicks = (int)Math.Round(price / TickSize);
-
-            // Calculate the aggregated price in ticks
-            int aggregatedPriceInTicks = (priceInTicks / tickAggregation) * tickAggregation;
-
-            // Convert back to price
-            double aggregatedPrice = aggregatedPriceInTicks * TickSize;
-
-            return aggregatedPrice;
-        }
 
         #region PriceLevelData Class
-        private class PriceLevelData
-        {
-            public double BidVolume { get; set; }
+       	private class PriceLevelData
+		{
+		    public double BidVolume { get; set; }
             public double AskVolume { get; set; }
             public double TimeSpent { get; set; }
             public double ImportanceScore { get; set; }
-
+			public double LargeOrders {get; set; }
+			public double LongestStreak {get; set; }
+			public double CurrentStreak {get; set; }
+			public string LastTrade  {get; set; }
+			
             public PriceLevelData()
             {
                 BidVolume = 0;
                 AskVolume = 0;
                 TimeSpent = 0;
                 ImportanceScore = 0;
+				LargeOrders = 0;
+				LongestStreak = 0;
+				CurrentStreak = 0;
             }
-        }
+		}
         #endregion
 		
 		#region Button Controls
@@ -503,7 +673,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 					// Switch to short-only mode
 			    isShortMode =  true;
+				isLongMode = false;
 				shortButton.Content = "Armed Short";
+				longButton.Content = "Arm Long";
+				longButton.Background = Brushes.Gray;
 				shortButton.Background = Brushes.Red;
 					
 		    }
@@ -549,8 +722,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 					// Switch to short-only mode
 			        isLongMode = true;
+					isShortMode = false;
 					longButton.Content = "Armed Long";
 					longButton.Background = Brushes.Green;
+					shortButton.Content = "Arm Short";
+				shortButton.Background = Brushes.Gray;
 		    }
 			 if (button == longButton && buttonText == "Armed Long" && buttonName == "LongButton")
 		    {

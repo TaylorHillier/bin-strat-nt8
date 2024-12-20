@@ -543,25 +543,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 	            lastSampleTime = Time[0];
 	            InitializeTradeParams();
 				
-	        }
-			
-			bool priceIncreased = Close[0] >= lastClose + ( ProfitTarget* TickSize);
-			
-			if (Close[0] >= (lastClose + (ProfitTarget * TickSize)) || (Close[0] <= (lastClose  - (ProfitTarget * TickSize))))
-            {
-                // Update historical data
-                UpdateHistoricalData(priceIncreased);
-				lastClose = Close[0];
-            }
-						
-                // Compute posterior probabilities
-                double itotal = ComputeImbalance();
-               var posteriors = CalculatePosteriors();
-
-                p_h1_d = posteriors.Item1;
-                p_h0_d = posteriors.Item2;
-			
-		
+	        }		
+				
 			// Update simulated trades and check for target or stop loss
 			ProcessTradeParams();
 
@@ -878,17 +861,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    float metricsX = 10;
 		    float metricsY = 10;
 		
-//		    RenderTarget.DrawText($"Delta Above: {deltaAbove:F0}", metricsFormat, 
-//		        new SharpDX.RectangleF(metricsX, metricsY, 200, 20), 
-//		        deltaAbove >= 0 ? positiveBrush : negativeBrush);
-		
-//		    RenderTarget.DrawText($"Delta Below: {deltaBelow:F0}", metricsFormat, 
-//		        new SharpDX.RectangleF(metricsX, metricsY + 20, 200, 20), 
-//		        deltaBelow >= 0 ? positiveBrush : negativeBrush);
-		
-//		    RenderTarget.DrawText($"Total Delta: {Math.Max(Math.Abs(deltaAbove/deltaBelow),Math.Abs(deltaBelow/deltaAbove)):F2}", metricsFormat, 
-//		        new SharpDX.RectangleF(metricsX, metricsY + 40, 200, 20), 
-//		        totalDelta >= 0 ? positiveBrush : negativeBrush);
 			
 			 RenderTarget.DrawText($"Min Volume: {minVolume:F0}", metricsFormat, 
 		        new SharpDX.RectangleF(metricsX, metricsY, 200, 20), 
@@ -900,15 +872,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		    RenderTarget.DrawText($"Adversary Detection: {detectionValue:F0}", metricsFormat, 
 		        new SharpDX.RectangleF(metricsX, metricsY + 40, 200, 20), 
-		        textBrush);
-
-			 RenderTarget.DrawText($"Long Probability: {p_h1_d:F3}", metricsFormat, 
-		        new SharpDX.RectangleF(metricsX, metricsY + 60, 200, 20), 
-		        textBrush);
-			
-			
-			 RenderTarget.DrawText($"Short Probability: {p_h0_d:F3}", metricsFormat, 
-		        new SharpDX.RectangleF(metricsX, metricsY + 80, 200, 20), 
 		        textBrush);
 		
 		    // Calculate the maximum width of the rectangles
@@ -1391,7 +1354,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        isSellImbalance = cumulativeSells > cumulativeBuys;
 		    }
 
-		        if (isLongMode  && isBuyImbalance && isTrendMode && p_h1_d > 0.70)
+		        if (isLongMode  && isBuyImbalance && isTrendMode && price > Swing(1).SwingHigh[0] )
 		        {
 		              
 		        tradeTaken = true;
@@ -1415,7 +1378,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		         //Print($"Trend mode: Long signal detected with probability {trendLongProb:F2}");
 		            
 		        }
-		        if (isShortMode  && isTrendMode  && isSellImbalance && p_h0_d > 0.70 )
+		        if (isShortMode  && isTrendMode  && isSellImbalance  && price < Swing(1).SwingLow[0] )
 		        {
 		           
 		               
@@ -1440,7 +1403,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                //Print($"Trend mode: Short signal detected with probability {trendShortProb:F2}");
 		            
 		        }
-		        if (isLongMode && isBuyImbalance && isRegressionMode && p_h0_d > 0.70 )
+		        if (isLongMode && isBuyImbalance && isRegressionMode  && price > Swing(1).SwingHigh[0] )
 		        {
 		           
 		               
@@ -1465,7 +1428,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		             //Print($"Regression mode: Counter-trend Sell signal detected with probability {reverseLongProb:F2}");
 		            
 		        }
-		      	if (isShortMode && isSellImbalance  && isRegressionMode && p_h1_d > 0.70 )
+		      	if (isShortMode && isSellImbalance  && isRegressionMode  && price < Swing(1).SwingLow[0] )
 		        {
 		              
 		         	 tradeTaken = true;
@@ -1934,320 +1897,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 	
 		#endregion
-
-		private List<int> observationSequence = new List<int>();
-		private int maxSequenceLength = 100; // Adjust as needed
-		
-		private List<double> historicalAskVolumes = new List<double>();  // List to store historical ask volumes
-		private List<double> historicalBidVolumes = new List<double>();  // List to store historical bid volumes
-		
-		private List<double> historicalAskIncreases = new List<double>();  // List to store historical ask volumes
-		private List<double> historicalBidIncreases = new List<double>();  // List to store historical bid volumes
-		
-		private List<double> historicalAskDecreases = new List<double>();  // List to store historical ask volumes
-		private List<double> historicalBidDecreases = new List<double>();  // List to store historical bid volumes
-	
-		private List<double> historicalRsiIncreases = new List<double>();
-		private List<double> historicalRsiDecreases = new List<double>();
-		
-		private List<double> historicalAdxIncreases = new List<double>();
-		private List<double> historicalAdxDecreases = new List<double>();
-		
-		private List<double> historicalMacdIncreases = new List<double>();
-		private List<double> historicalMacdDecreases = new List<double>();
-
-		private List<(int Observation, double AskVolume, double BidVolume, double Rsi, double Adx, double Macd)> observationData = new List<(int, double, double, double, double, double)>();
-
-		private void UpdateHistoricalData(bool priceIncreased)
-		{
-	
-		    // Calculate technical indicators
-		    double rsi = RSI(14, 3)[0];
-		    double adx = ADX(14)[0];
-		    double macd = MACD(12, 26, 9).Diff[0];
-		
-		    // Calculate volume imbalance
-		    double totalBidVolume = cumulativeBuys;
-		    double totalAskVolume = cumulativeSells;
-
-		    // Add the observation, ask, bid volumes, and technical indicators to observationData
-		    int observation = priceIncreased ? 1 : 0;
-		    observationData.Add((observation, totalAskVolume, totalBidVolume, rsi, adx, macd));
-		
-		    // Update historical data based on price movement
-		    if (priceIncreased)
-		    {
-			
-		        historicalAskIncreases.Add(totalAskVolume);
-				historicalBidIncreases.Add(totalBidVolume);
-		        historicalRsiIncreases.Add(rsi);
-		        historicalAdxIncreases.Add(adx);
-		        historicalMacdIncreases.Add(macd);
-		    }
-		    else
-		    {
-		        historicalAskDecreases.Add(totalAskVolume);
-				historicalBidDecreases.Add(totalBidVolume);
-		        historicalRsiDecreases.Add(rsi);
-		        historicalAdxDecreases.Add(adx);
-		        historicalMacdDecreases.Add(macd);
-		    }
-		
-		    // Maintain the maximum sequence length
-		    if (observationData.Count > maxSequenceLength)
-		        observationData.RemoveAt(0);
-		
-		    if (historicalAskDecreases.Count > maxSequenceLength)
-		        historicalAskDecreases.RemoveAt(0);
-		    if (historicalAskIncreases.Count > maxSequenceLength)
-		        historicalAskIncreases.RemoveAt(0);
-			
-			if (historicalBidIncreases.Count > maxSequenceLength)
-		        historicalBidIncreases.RemoveAt(0);
-		    if (historicalBidDecreases.Count > maxSequenceLength)
-		        historicalBidDecreases.RemoveAt(0);
-		
-		    if (historicalRsiIncreases.Count > maxSequenceLength)
-		        historicalRsiIncreases.RemoveAt(0);
-		    if (historicalRsiDecreases.Count > maxSequenceLength)
-		        historicalRsiDecreases.RemoveAt(0);
-		
-		    if (historicalAdxIncreases.Count > maxSequenceLength)
-		        historicalAdxIncreases.RemoveAt(0);
-		    if (historicalAdxDecreases.Count > maxSequenceLength)
-		        historicalAdxDecreases.RemoveAt(0);
-		
-		    if (historicalMacdIncreases.Count > maxSequenceLength)
-		        historicalMacdIncreases.RemoveAt(0);
-		    if (historicalMacdDecreases.Count > maxSequenceLength)
-		        historicalMacdDecreases.RemoveAt(0);
-		
-		
-		    // Recalculate statistical parameters and Bayesian priors
-		    RecalculateStatistics();
-		}
-
-		private void RecalculateStatistics()
-		{
-		    // Recalculate for price increases
-		    if (historicalAskIncreases.Count > 0)
-		    {
-		        muAskIncrease = historicalAskIncreases.Average();
-		        sigmaAskIncrease = Math.Sqrt(historicalAskIncreases.Average(askvolume => Math.Pow(askvolume - muAskIncrease, 2)));
-				
-				muBidIncrease = historicalBidIncreases.Average();
-		        sigmaBidIncrease = Math.Sqrt(historicalBidIncreases.Average(bidvolume => Math.Pow(bidvolume - muBidIncrease, 2)));
-		
-		        muRsiIncrease = historicalRsiIncreases.Average();
-		        sigmaRsiIncrease = Math.Sqrt(historicalRsiIncreases.Average(rsi => Math.Pow(rsi - muRsiIncrease, 2)));
-		
-		        muAdxIncrease = historicalAdxIncreases.Average();
-		        sigmaAdxIncrease = Math.Sqrt(historicalAdxIncreases.Average(adx => Math.Pow(adx - muAdxIncrease, 2)));
-		
-		        muMacdIncrease = historicalMacdIncreases.Average();
-		        sigmaMacdIncrease = Math.Sqrt(historicalMacdIncreases.Average(macd => Math.Pow(macd - muMacdIncrease, 2)));
-		    }
-		    else
-		    {
-		        muAskIncrease = 0;
-		        sigmaAskIncrease = 1;
-				 muBidIncrease = 0;
-		        sigmaBidIncrease = 1;
-		        muRsiIncrease = 0;
-		        sigmaRsiIncrease = 1;
-		        muAdxIncrease = 0;
-		        sigmaAdxIncrease = 1;
-		        muMacdIncrease = 0;
-		        sigmaMacdIncrease = 1;
-		    }
-		
-		    // Recalculate for price decreases
-		    if (historicalAskDecreases.Count > 0)
-		    {
-		         muAskDecrease = historicalAskDecreases.Average();
-		        sigmaAskDecrease= Math.Sqrt(historicalAskDecreases.Average(askvolume => Math.Pow(askvolume - muAskDecrease, 2)));
-				
-				muBidDecrease = historicalBidDecreases.Average();
-		        sigmaBidDecrease = Math.Sqrt(historicalBidDecreases.Average(bidvolume => Math.Pow(bidvolume - muBidDecrease, 2)));
-		
-		        muRsiDecrease = historicalRsiDecreases.Average();
-		        sigmaRsiDecrease = Math.Sqrt(historicalRsiDecreases.Average(rsi => Math.Pow(rsi - muRsiDecrease, 2)));
-		
-		        muAdxDecrease = historicalAdxDecreases.Average();
-		        sigmaAdxDecrease = Math.Sqrt(historicalAdxDecreases.Average(adx => Math.Pow(adx - muAdxDecrease, 2)));
-		
-		        muMacdDecrease = historicalMacdDecreases.Average();
-		        sigmaMacdDecrease = Math.Sqrt(historicalMacdDecreases.Average(macd => Math.Pow(macd - muMacdDecrease, 2)));
-		    }
-		    else
-		    {
-		        muAskDecrease = 0;
-		        sigmaAskDecrease = 1;
-				 muBidDecrease = 0;
-		        sigmaBidDecrease= 1;
-		        muRsiDecrease = 0;
-		        sigmaRsiDecrease = 1;
-		        muAdxDecrease = 0;
-		        sigmaAdxDecrease = 1;
-		        muMacdDecrease = 0;
-		        sigmaMacdDecrease = 1;
-		    }
-		
-		    // Calculate Bayesian priors based on historical data
-		    CalculateBayesianPriors();
-
-		}
-
-		/// <summary>
-		/// Calculates Bayesian priors P(H=1) and P(H=0) based on historical data.
-		/// </summary>
-		private void CalculateBayesianPriors()
-		{
-		    double totalEvents = historicalAskIncreases.Count + historicalAskDecreases.Count;
-		
-		    if (totalEvents == 0)
-		    {
-		        // Avoid division by zero; assign equal priors
-		        priorPriceIncrease = 0.5;
-		        priorPriceDecrease = 0.5;
-				 // Optionally, log the updated priors for debugging
-		   
-		    }
-		    else
-		    {
-		        priorPriceIncrease = (double)historicalAskIncreases.Count / totalEvents;
-		        priorPriceDecrease = (double)historicalAskDecreases.Count / totalEvents;
-		
-		        // Ensure that priors sum to 1
-		        double sum = priorPriceIncrease + priorPriceDecrease;
-		        if (sum != 1.0)
-		        {
-		            priorPriceIncrease /= sum;
-		            priorPriceDecrease /= sum;
-		        }
-					 // Optionally, log the updated priors for debugging
-		   // Print($"[{Time[0]}] Updated Priors -> P(H=1): {priorPriceIncrease}, P(H=0): {priorPriceDecrease}");
-				
-		    }
-		
-		   
-		}
-
-        /// <summary>
-        /// Computes the total imbalance Itotal by summing (BidVolume - AskVolume) across all price levels.
-        /// </summary>
-        /// <returns>Total Imbalance (Itotal)</returns>
-        private double ComputeImbalance()
-        {
-            double itotal = 0;
-           foreach (var kvp in buysAtBar)
-			{
-			    // Declare a variable to hold the value from sellsAtBar
-			    double sells;
-			
-			    // Check if sellsAtBar contains the same key as buysAtBar
-			    if (sellsAtBar.TryGetValue(kvp.Key, out sells))
-			    {
-			        // Perform the subtraction and update itotal
-			        itotal += kvp.Value - sells;
-			    }
-			}
-
-            return itotal;
-        }
-
-		/// <summary>
-		/// Calculates the posterior probabilities P(H=1|D) and P(H=0|D) using Bayes' Theorem, incorporating technical indicators.
-		/// </summary>
-		/// <param name="volumeImbalance">Current volume imbalance (bid - ask volume)</param>
-		/// <param name="totalAskVolume">Total Ask Volume</param>
-		/// <param name="totalBidVolume">Total Bid Volume</param>
-		/// <returns>Tuple containing (P(H=1|D), P(H=0|D))</returns>
-		private (double, double) CalculatePosteriors()
-		{
-		    // Calculate likelihoods based on cumulative buys
-		    double p_d_h1_buys = GaussianPDF(cumulativeBuys, muAskIncrease, sigmaAskIncrease); // P(D_buys|H=1)
-		    double p_d_h0_buys = GaussianPDF(cumulativeBuys, muAskDecrease, sigmaAskDecrease); // P(D_buys|H=0)
-		    
-		    // Calculate likelihoods based on cumulative sells
-		    double p_d_h1_sells = GaussianPDF(cumulativeSells, muBidIncrease, sigmaBidIncrease); // P(D_sells|H=1)
-		    double p_d_h0_sells = GaussianPDF(cumulativeSells, muBidDecrease, sigmaBidDecrease); // P(D_sells|H=0)
-		    
-		    // Combine likelihoods (assuming independence)
-		    double p_d_h1 = p_d_h1_buys * p_d_h1_sells; // P(D|H=1)
-		    double p_d_h0 = p_d_h0_buys * p_d_h0_sells; // P(D|H=0)
-		
-		
-		    // Incorporate RSI into the likelihood calculation
-		    double rsi = RSI(5, 3)[0];
-		    double p_rsi_h1 = GaussianPDF(rsi, muRsiIncrease, sigmaRsiIncrease);
-		    double p_rsi_h0 = GaussianPDF(rsi, muRsiDecrease, sigmaRsiDecrease);
-		    p_d_h1 *= p_rsi_h1; // P(D|H=1) *= P(RSI|H=1)
-		    p_d_h0 *= p_rsi_h0; // P(D|H=0) *= P(RSI|H=0)
-		
-		    // Incorporate ADX into the likelihood calculation
-		    double adx = ADX(5)[0];
-		    double p_adx_h1 = GaussianPDF(adx, muAdxIncrease, sigmaAdxIncrease);
-		    double p_adx_h0 = GaussianPDF(adx, muAdxDecrease, sigmaAdxDecrease);
-		    p_d_h1 *= p_adx_h1; // P(D|H=1) *= P(ADX|H=1)
-		    p_d_h0 *= p_adx_h0; // P(D|H=0) *= P(ADX|H=0)
-		
-		    // Incorporate MACD into the likelihood calculation
-		    double macd = MACD(12, 26, 9).Diff[0];
-		    double p_macd_h1 = GaussianPDF(macd, muMacdIncrease, sigmaMacdIncrease);
-		    double p_macd_h0 = GaussianPDF(macd, muMacdDecrease, sigmaMacdDecrease);
-		    p_d_h1 *= p_macd_h1; // P(D|H=1) *= P(MACD|H=1)
-		    p_d_h0 *= p_macd_h0; // P(D|H=0) *= P(MACD|H=0)
-		
-		
-		    // Calculate marginal likelihood P(D)
-		    double p_d = (p_d_h1 * priorPriceIncrease) + (p_d_h0 * priorPriceDecrease);
-		
-		    // Handle zero marginal likelihood
-		    if (p_d == 0)
-		    {
-		        Print("[DEBUG] Marginal Likelihood is zero, returning neutral priors.");
-		        return (0.5, 0.5);  // Neutral priors when likelihood is zero
-		    }
-		
-		    // Calculate posterior probabilities
-		    double p_h1_d = (p_d_h1 * priorPriceIncrease) / p_d; // P(H=1|D)
-		    double p_h0_d = (p_d_h0 * priorPriceDecrease) / p_d; // P(H=0|D)
-		
-		    // Ensure non-zero posteriors
-		    if (p_h1_d < 1e-10) p_h1_d = 1e-10;
-		    if (p_h0_d < 1e-10) p_h0_d = 1e-10;
-		
-		    // Print the posterior probabilities
-		    Print($"Posteriors: P(H=1|D): {p_h1_d}, P(H=0|D): {p_h0_d}");
-		
-		    return (p_h1_d, p_h0_d);
-		}
-
-
-
-/// <summary>
-/// Calculates the probability density of a value x for a Gaussian distribution.
-/// </summary>
-/// <param name="x">Value</param>
-/// <param name="mu">Mean</param>
-/// <param name="sigma">Standard Deviation</param>
-/// <returns>Probability density P(x)</returns>
-private double GaussianPDF(double x, double mu, double sigma)
-{
-    if (sigma <= 0)
-    {
-       
-        return 0;
-    }
-    double exponent = -Math.Pow(x - mu, 2) / (2 * Math.Pow(sigma, 2));
-    double pdf = (1 / (Math.Sqrt(2 * Math.PI) * sigma)) * Math.Exp(exponent);
-    
- 
-    
-    return pdf;
-}
-
 
 	}
 }

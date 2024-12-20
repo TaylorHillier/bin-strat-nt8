@@ -244,7 +244,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private List<double> historicalDecreases = new List<double>();
 		
 		// No need for a key, as List manages indices automatically
-		private int maxHistoricalData = 1000; // Adjust as needed
+		private int maxHistoricalData = 100; // Adjust as needed
 
 
         // Bayesian parameters

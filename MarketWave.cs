@@ -277,7 +277,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        {
 			             priceLevels[currentPriceLevel].CurrentStreak = 0;
 			        }
-			         priceLevels[currentPriceLevel].CurrentStreak++;
+			         priceLevels[currentPriceLevel].CurrentStreak += e.Volume;
 			       priceLevels[currentPriceLevel].wasLastUp = true;
 			    }
 			    else if (newPriceLevel < currentPriceLevel)
@@ -286,7 +286,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        {
 			            priceLevels[currentPriceLevel].CurrentStreak = 0;
 			        }
-			        priceLevels[currentPriceLevel].CurrentStreak--;
+			        priceLevels[currentPriceLevel].CurrentStreak -= e.Volume;
 			        priceLevels[currentPriceLevel].wasLastUp = false;
 			    }
 	
@@ -354,7 +354,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 					Print($"Trade Taken. Ask Volume: {currentLevelData.AskVolume}, Bid Volume: {currentLevelData.BidVolume}, Importance Score: {currentLevelData.ImportanceScore}, Time at level {currentLevelData.TimeSpent}, Ratio: ({Math.Max(currentLevelData.BidVolume,currentLevelData.AskVolume)} / {Math.Min(currentLevelData.BidVolume,currentLevelData.AskVolume)})");
 				
-			            if (isLongMode &&  currentLevelData.CurrentStreak > 0 && isTrendMode)
+			            if (isLongMode &&  currentLevelData.CurrentStreak > 0 && isTrendMode &&  askImbalance)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -376,7 +376,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							tradeTaken = true;
 			                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
 			            } 
-      					if (isLongMode &&  askImbalance && isRegressionMode)
+      					if (isLongMode &&  askImbalance && isRegressionMode &&  currentLevelData.CurrentStreak < 0)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -402,7 +402,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 						
 					
-			            if (isShortMode &&  currentLevelData.CurrentStreak < 0 && isTrendMode )
+			            if (isShortMode &&  currentLevelData.CurrentStreak < 0 && isTrendMode && bidImbalance)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -425,7 +425,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                Print($"[{Time[0]}] Entering Short Position (Auto Arm)");
 			            }
 					
-			            if (isShortMode && bidImbalance && isRegressionMode )
+			            if (isShortMode && bidImbalance && isRegressionMode &&  currentLevelData.CurrentStreak > 0)
 			            {
 			               
 			                isAtmStrategyCreated = false;

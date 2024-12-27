@@ -42,7 +42,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{ get; set; }
 		
         // Define trajectory lengths
-        private readonly int[] trajectoryLengths = { 2, 5, 10, 20, 50, 100, 200, 500, 1000, 1500, 2000 };
+        private readonly int[] trajectoryLengths = {2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610};
 
         // TrajectoryLine class
         private class TrajectoryLine
@@ -52,13 +52,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             public double Price { get; set; }
             public DateTime Time { get; set; }
 			public double Slope  { get; set; }
-            public TrajectoryLine(int startBar, int endBar, double price, DateTime time, double slope)
+			public double Angle {get; set; }
+			
+            public TrajectoryLine(int startBar, int endBar, double price, DateTime time, double slope, double angle)
             {
                 StartBar = startBar;
                 EndBar = endBar;
                 Price = price;
                 Time = time;
 				Slope = slope;
+				Angle = angle;
             }
         }
 
@@ -69,16 +72,19 @@ namespace NinjaTrader.NinjaScript.Strategies
         private readonly Dictionary<int, Brush> trajectoryColors = new Dictionary<int, Brush>
         {
             {2, Brushes.Blue},
-            {5, Brushes.Green},
-            {10, Brushes.Orange},
-            {20, Brushes.Purple},
-            {50, Brushes.Teal},
-            {100, Brushes.Brown},
-            {200, Brushes.Magenta},
-            {500, Brushes.Cyan},
-            {1000, Brushes.Yellow},
-			{1500, Brushes.Red},
-            {2000, Brushes.Black}
+            {3, Brushes.Green},
+            {5, Brushes.Orange},
+            {8, Brushes.Purple},
+            {13, Brushes.Teal},
+            {21, Brushes.Brown},
+            {34, Brushes.Magenta},
+            {55, Brushes.Cyan},
+            {89, Brushes.Yellow},
+			{144, Brushes.Red},
+            {233, Brushes.Black},
+			{377, Brushes.Black},
+			{610, Brushes.Black},
+			  
         };
 
         // Method to get color based on trajectory length
@@ -143,7 +149,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			    // Initialize the trajectoryLines dictionary
                 trajectoryLines = new Dictionary<int, TrajectoryLine>();
 
-			if(CurrentBar > 2500){
+			if(CurrentBar > 2584){
                 // Initialize Draw.Line objects for each length with default positions
                 foreach (var length in trajectoryLengths)
                 {
@@ -160,6 +166,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 			
 			double totalSlope = 0;
+			double totalAngle = 0;
 				
             foreach(var length in trajectoryLengths)
             {
@@ -169,7 +176,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     int endBar = CurrentBar;
                     double price = Close[length];
                     DateTime time = Time[length];
-					double slope = (Close[0] - price) / (endBar - startBar)/*/ ((double)ToTime(Time[0].ToUniversalTime()) - (double)ToTime(time.ToUniversalTime()))*/;
+					double slope = (Close[0] - price);
+					double angle = slope / (startBar - endBar);
                     // Update or create the TrajectoryLine for this length
                     if(trajectoryLines.ContainsKey(length))
                     {
@@ -180,11 +188,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                         trajLine.Price = price;
                         trajLine.Time = time;
 						trajLine.Slope = slope;
+						trajLine.Angle = angle;
                     }
                     else
                     {
                         // Create new TrajectoryLine
-                        TrajectoryLine trajLine = new TrajectoryLine(startBar, endBar, price, time, slope);
+                        TrajectoryLine trajLine = new TrajectoryLine(startBar, endBar, price, time, slope, angle);
                         trajectoryLines.Add(length, trajLine);
                     }
 
@@ -200,8 +209,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                               lineColor, DashStyleHelper.Solid, 1);
 
 					totalSlope += slope;
+					totalAngle += angle;
                     // Optional: Print debug information
-                    Print($"[TRAJECTORY] Length: {length}, StartBar: {startBar}, EndBar: {endBar}, Price: {price}, Time: {time}, Slope: {slope}");
+                    Print($"[TRAJECTORY] Length: {length}, StartBar: {startBar}, EndBar: {endBar}, Price: {price}, Time: {time}, Slope: {slope}, Angle: {angle}");
                 }
                 else
                 {

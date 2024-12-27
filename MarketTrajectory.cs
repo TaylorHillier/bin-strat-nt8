@@ -211,7 +211,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 					totalSlope += slope;
 					totalAngle += angle;
                     // Optional: Print debug information
-                    Print($"[TRAJECTORY] Length: {length}, StartBar: {startBar}, EndBar: {endBar}, Price: {price}, Time: {time}, Slope: {slope}, Angle: {angle}");
+//                    Print($"[TRAJECTORY] Length: {length}, StartBar: {startBar}, EndBar: {endBar}, Price: {price}, Time: {time}, Slope: {slope}, Angle: {angle}");
                 }
                 else
                 {
@@ -220,11 +220,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 			
-			Print(totalSlope);
-			
 			if (orderId.Length == 0 && atmStrategyId.Length == 0){
 		               
-				if(totalSlope > 20){
+				if(TaylorFRSI(5,3)[0] < 30 &&  MarketTrajectoryRSIByLength(5,3)[0] < 30){
 					 
 					if(State == State.Realtime){
 						isAtmStrategyCreated = false;
@@ -254,7 +252,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						}
 						EnterLong();
 					}
-				} else if (totalSlope < -20){
+				} else if (TaylorFRSI(5,3)[0] > 70 && MarketTrajectoryRSIByLength(5,3)[0] > 70){
 				 
 					if(State == State.Realtime){
 						isAtmStrategyCreated = false;
@@ -285,6 +283,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 						EnterShort();
 					}
 				}
+			}
+			
+			if(TaylorFRSI(5,3)[0] > 70 && MarketTrajectoryRSIByLength(5,3)[0] > 70){
+				Draw.ArrowDown(this,$"sell{CurrentBar}",true,0,Close[0],Brushes.Red);
+			}else if(TaylorFRSI(5,3)[0] < 30 &&  MarketTrajectoryRSIByLength(5,3)[0] < 30){
+				Draw.ArrowUp(this,$"buy{CurrentBar}",true,0,Close[0],Brushes.Green);
 			}
 			
 			  // Manage ATM Strategies and Orders

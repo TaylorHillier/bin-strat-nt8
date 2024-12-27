@@ -35,7 +35,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 	public class HttpClientWrapper
 	{
 		private static readonly HttpClient client = new HttpClient();
-		private const string BaseUrl = "http://192.168.1.116:5000"; // Your server address
+		private const string BaseUrl = "http://192.168.1.124:5000"; // Your server address
 		private static readonly JavaScriptSerializer serializer = new JavaScriptSerializer();
 
 		public static Dictionary<string, object> Get(string endpoint)
@@ -69,7 +69,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double TradeCount;
 		public double TradeExpectancy;
 		public string ImbalanceType { get; set; }
-		public TradeType TradeType  { get; set; }
 		public int WindowId { get; set; }
 
 		public double VolumeSpeed { get; set; }
@@ -80,7 +79,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double StdDev { get; set; }
 		public double PriceDistance { get; set; }
 		public double PriceDifference { get; set; }
-		public double DailyVol { get; set; }
+		public double AverageBarVol { get; set; }
 		
 		
 		public int WinCount { get; set; } = 0;
@@ -92,7 +91,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		
 		
-		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string direction, double volumeSpeed, double maDif, double tod, double priceDistance, double dailyVol, double bolDif, double stdDeviation )
+		public SimTrade(double imbVol, double advDetection, double ratio, double entryPrice, string direction, double volumeSpeed, double maDif, double bolDif, double stdDeviation, double tod, double priceDistance, double averageBarVol )
 		{
 		    ImbVol = imbVol;
 		    AdvDetection = advDetection;
@@ -105,7 +104,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			BolDif = bolDif;
 			StdDev = stdDeviation;
 			PriceDistance =priceDistance;
-			DailyVol = dailyVol;
+			AverageBarVol = averageBarVol;
 		}
 		
 		public void UpdateWinRate()
@@ -119,10 +118,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 	public enum TradeType{
 		Regress,
 		Trend
-//		ReverseLong,
-//		TrendLong,
-//		ReverseShort,
-//		TrendShort
 	}
 	
 	public class TradeParameters
@@ -135,43 +130,18 @@ namespace NinjaTrader.NinjaScript.Strategies
 	    public List<SimTrade> Trades { get; } = new List<SimTrade>();
 	    public bool IsActive { get; set; } = true;
 		public bool allowInTrade { get; set; } = true;
-	
-	    public TradeParameters(double imbVolThreshold, double advDetectionThreshold, double ratioThreshold, DateTime tradeWindowEndTime)
+		public TradeType TradeType  { get; set; }
+		
+	    public TradeParameters(double imbVolThreshold, double advDetectionThreshold, double ratioThreshold, DateTime tradeWindowEndTime, TradeType tradeType)
 	    {
 	        ImbVolThreshold = imbVolThreshold;
 	        AdvDetectionThreshold = advDetectionThreshold;
 	        RatioThreshold = ratioThreshold;
 	        TradeWindowEndTime = tradeWindowEndTime; // Initialize the property
+			TradeType = tradeType;
 	    }
 	}
 
-	   public struct VolumeProfileLevel
-		{
-		    public double BuyVolume;
-		    public double SellVolume;
-		    public double Delta => BuyVolume - SellVolume;
-		
-		    public void AddBuyVolume(double volume)
-		    {
-		        BuyVolume += Math.Abs(volume);
-		    }
-		
-		    public void AddSellVolume(double volume)
-		    {
-		        SellVolume += Math.Abs(volume);
-		    }
-		}
-
-		 public struct VolumeProfileAnalysis
-		{
-		    public double TotalDelta;
-		    public double MaxVolume;
-		    public double PriceWithMaxVolume;
-		    public Dictionary<double, VolumeProfileLevel> Profile;
-		    public bool IsValid;
-		    public double DeltaAbove; // Added property
-		    public double DeltaBelow; // Added property
-		}
 	#endregion
 
 	public class FootPrintStrat : Strategy
@@ -245,11 +215,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		double positionOffLow = 0;
 		double deltaOffHigh = 0;
 		double deltaOffLow = 0;
-		
-		  private Dictionary<double, VolumeProfileLevel> accumulatedVolumeProfile;
-	    private Queue<Dictionary<double, VolumeProfileLevel>> historicalProfiles;
-
-		private Dictionary<double, VolumeProfileLevel> currentBarVolumeProfile;
 
 	    private const int MaxHistoricalBars = 1; // Adjust this value as needed
 		
@@ -331,8 +296,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 				minVolume = 85;
 				ATMStrategy = "Scalp";
-				accumulatedVolumeProfile = new Dictionary<double, VolumeProfileLevel>();
-            	historicalProfiles = new Queue<Dictionary<double, VolumeProfileLevel>>();
+				
 		
 				// Disable this property for performance gains in Strategy Analyzer optimizations
 				// See the Help Guide for additional information
@@ -452,7 +416,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		bool firstStart = true;
 
 		double lastClose = 0;
-		
+		double dailyBars = 0;
+		double avgBarVolume = 0;
 		protected override void OnBarUpdate()
 		{ 
 
@@ -472,7 +437,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				UpdateHighsAndLows();
 		        activeBar = CurrentBar;
-
+				
+				dailyBars++;
 				
 				buysAtBar.Clear();
 		        sellsAtBar.Clear();
@@ -492,6 +458,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 		        currentDay = Time[0].Date;  // set currentDay to the date of the first bar
 		        dailyVolume = 0;            // start with zero volume for the day
+				dailyBars = 0;
 		    }
 		
 		    // Check if a new day has started
@@ -507,9 +474,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 		        // Add this bar's volume to dailyVolume
 		        dailyVolume += Volume[0];
+			
+					
 		    }
 				
+			avgBarVolume = dailyVolume / dailyBars;
 				
+			if(pastTime){
+				InitializeTradeParams();
+			}
 			// Update simulated trades and check for target or stop loss
 			
 		}
@@ -522,13 +495,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 
 		
-		private void ProcessTradeParams()
+		private void ProcessTradeParams(MarketDataEventArgs e)
 	    {
 	        var completedTradeParams = new List<TradeParameters>();
 	
 	        foreach (var tradeParams in tradeParamsList.ToList())
 	        {
-	            if (Time[0] > tradeParams.TradeWindowEndTime)
+	            if (e.Time > tradeParams.TradeWindowEndTime)
 	            {
 	                UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
 	                completedTradeParams.Add(tradeParams);
@@ -547,23 +520,26 @@ namespace NinjaTrader.NinjaScript.Strategies
 		// Variables declared at class level
 		private double dailyVolume = 0;
 		private DateTime currentDay = DateTime.MinValue; // Will store the current day's date
-		
+		bool pastTime = false;
+		 DateTime currentTime;
 
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 //			if ((State == State.Historical && trainModel) || (State == State.Realtime))
 			{
-				ProcessTradeParams();
+				ProcessTradeParams(e);
 				
-				if (e.Time - lastSampleTime > TimeSpan.FromSeconds(sampleInterval))
+				 pastTime = e.Time - lastSampleTime > TimeSpan.FromSeconds(sampleInterval);
+				if (e.Time - lastSampleTime > TimeSpan.FromSeconds(sampleInterval) && CurrentBar != activeBar)
 		        {
 		            lastSampleTime = e.Time;
-		            InitializeTradeParams(e);
 					
 		        }	
 
 				if (e.MarketDataType == MarketDataType.Last)
 				{
+					
+					 currentTime = e.Time;
 					double price = e.Price;
 					double volume = e.Volume;
 					
@@ -714,13 +690,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 							
 							if (buyVolume > sellVolume)
 							{
-								tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
-								direction = modelToTrain == TradingMode.Trend ? "Long" : "Short";
+							    tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
+							    
+							    // If EITHER condition is true => "Long", otherwise => "Short"
+							    direction = ((modelToTrain == TradingMode.Trend && trainModel) 
+							                 || (isTrendMode && incTrain))
+							                ? "Long" 
+							                : "Short";
 							}
 							else if (sellVolume > buyVolume)
 							{
-								tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
-								direction = modelToTrain == TradingMode.Trend ? "Short" : "Long";
+							    tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
+							    
+							    // If EITHER condition is true => "Short", otherwise => "Long"
+							    direction = ((modelToTrain == TradingMode.Trend && trainModel) 
+							                 || (isTrendMode && incTrain))
+							                ? "Short" 
+							                : "Long";
 							}
 							
 							var activeTrades = tradeParamsList.Where(tp => tp.IsActive && tp.TradeWindowEndTime > currentTime);
@@ -827,9 +813,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 			int curwindowid = 0;
 			HashSet<double> sampledLevels = new HashSet<double>(); // HashSet to track sampled levels
 			
-			private void InitializeTradeParams(MarketDataEventArgs e)
+			private void InitializeTradeParams()
 			{
-			    DateTime currentTime = e.Time;
 			    DateTime tradeWindowEndTime = currentTime.AddSeconds(tradesWindowMinutes);
 
 			    if (initialLetters == "NQ")
@@ -841,36 +826,54 @@ namespace NinjaTrader.NinjaScript.Strategies
 				        double price = kvp.Key;
 				        double buyVolume = kvp.Value;
 				        double sellVolume = aggregatedSells.ContainsKey(price) ? aggregatedSells[price] : 0;
-				        double tradeRatio;
+				        double tradeRatio = 0;
 				        string direction = "";
 				        
 				        // Debug prints for volumes and ratio
 				       
 				
 				        if (buyVolume > sellVolume)
-				        {
-				            tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
-				            direction = modelToTrain == TradingMode.Trend ? "Long" : "Short";
-				        }
-				        else
-				        {
-				            tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
-				            direction = modelToTrain == TradingMode.Trend ? "Short" : "Long";
-				        }
-				
-				       
+						{
+						    tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
+						    
+						    // If EITHER condition is true => "Long", otherwise => "Short"
+						    direction = ((modelToTrain == TradingMode.Trend && trainModel) 
+						                 || (isTrendMode && incTrain))
+						                ? "Long" 
+						                : "Short";
+						}
+						else if (sellVolume > buyVolume)
+						{
+						    tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
+						    
+						    // If EITHER condition is true => "Short", otherwise => "Long"
+						    direction = ((modelToTrain == TradingMode.Trend && trainModel) 
+						                 || (isTrendMode && incTrain))
+						                ? "Short" 
+						                : "Long";
+						}
 				
 				        if (Math.Min(buyVolume, sellVolume) > detectionValueForML &&
 				            Math.Abs(buyVolume - sellVolume) > imbalanceValueForML &&
 				            tradeRatio > ratioValueForML)
 				        {
+							TradeType tradeType = TradeType.Trend;
+							
+							if(isTrendMode){
+								tradeType = TradeType.Trend;
+							}else if(isRegressionMode){
+								tradeType = TradeType.Regress;
+							}
 				          
 				            TradeParameters tradeParams = new TradeParameters(
 				                Math.Abs(buyVolume - sellVolume),
 				                Math.Min(buyVolume, sellVolume),
 				                tradeRatio,
-				                tradeWindowEndTime
+				                tradeWindowEndTime,
+								tradeType
 				            );
+							
+							Print(tradeParams.TradeType);
 				            tradeParamsList.Add(tradeParams);
 				        }
 				
@@ -885,9 +888,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			            double sellVolume = sellsAtBar.ContainsKey(price - TickSize) ? sellsAtBar[price - TickSize] : 0;
 			            double tradeRatio = buyVolume > sellVolume ? (sellVolume > 0 ? buyVolume / sellVolume : buyVolume) : (buyVolume > 0 ? sellVolume / buyVolume : sellVolume);
 					
-			            if (Math.Min(buyVolume, sellVolume) > detectionValueForML && Math.Abs(buyVolume - sellVolume) > 25 && tradeRatio > 2.5)
+			            if (Math.Min(buyVolume, sellVolume) > detectionValueForML)
 			            {
-			                TradeParameters tradeParams = new TradeParameters(Math.Abs(buyVolume - sellVolume), Math.Min(buyVolume, sellVolume), tradeRatio, tradeWindowEndTime);
+			                TradeParameters tradeParams = new TradeParameters(Math.Abs(buyVolume - sellVolume), Math.Min(buyVolume, sellVolume), tradeRatio, tradeWindowEndTime, isRegressionMode ? TradeType.Regress : TradeType.Trend);
 			                tradeParamsList.Add(tradeParams);
 			                break;
 			            }
@@ -948,9 +951,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 					PATIMachineLearningInputsV2().MovingAvgDiff[1],
 					PATIMachineLearningInputsV2().BollingerDiff[1],
 					PATIMachineLearningInputsV2().StdDevBB[1],
-					PATIMachineLearningInputsV2().TimeOfDay[1],
+					PATIMachineLearningInputsV2().TimeOfDay[0],
 					priceDistance,
-					dailyVolume
+					avgBarVolume
 			    );
 			
 			    tradeParams.Trades.Add(newTrade);
@@ -1026,72 +1029,59 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 			private void WriteTradesToCsv(List<TradeParameters> completedTradeParams)
 			{
-			   	string regressionIncrementalPath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\inctrain_regression.csv";
-				string trendIncrementalPath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\inctrain_trend.csv";
-				string mainTrainPath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\train_model.csv";
-				
-				// Determine which incremental file to use based on mode
-				string incrementalFilePath = isRegressionMode ? regressionIncrementalPath : trendIncrementalPath;
-				
-				// Decide final filePath based on incTrain or trainModel flags
-				string filePath = incTrain ? incrementalFilePath :
-				                 trainModel ? mainTrainPath :
-				                 "";
+			    // If we have no reason to write (both incTrain and trainModel false), just return
+			    if (!incTrain && !trainModel) 
+			        return;
 			
-			    if (string.IsNullOrEmpty(filePath)) return;
+			    // If there's nothing to write, just return
+			    if (completedTradeParams == null || completedTradeParams.Count == 0)
+			        return;
+			
+			    // Paths for incremental or main
+			    string regressionIncrementalPath = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\inctrain_regression.csv";
+			    string trendIncrementalPath      = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\inctrain_trend.csv";
+			    string mainTrainPath             = @"C:\Users\hilli\Documents\NinjaTrader 8\templates\TaylorML\train_model.csv";
 			
 			    try
 			    {
-			        string directory = Path.GetDirectoryName(filePath);
-			        if (!Directory.Exists(directory))
+			        // ---------------------------------------------------
+			        // 1) If trainModel == true, EVERYTHING goes to mainTrainPath
+			        // ---------------------------------------------------
+			        if (trainModel)
 			        {
-			            Directory.CreateDirectory(directory);
+			            // We only need one file (mainTrainPath).
+			            // We'll gather all completed trades (any TradeType) together.
+			            WriteTradesToSingleFile(
+			                completedTradeParams,
+			                mainTrainPath
+			            );
+			            
+			            // Clear after writing
+			            completedTradeParams.Clear();
+			            return;
 			        }
 			
-			        bool fileExists = File.Exists(filePath);
-			        bool headerExists = false;
+			        // ---------------------------------------------------
+			        // 2) If we reach here, then trainModel == false, but incTrain == true
+			        //    => separate files for Regress vs. Trend
+			        // ---------------------------------------------------
+			        List<TradeParameters> regressList = completedTradeParams
+			            .Where(tp => tp.TradeType == TradeType.Regress)
+			            .ToList();
 			
-			        if (fileExists)
-			        {
-			            // Check if the header exists
-			            string firstLine = File.ReadLines(filePath).FirstOrDefault();
-			            headerExists = firstLine != null && firstLine.StartsWith("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,MADif,TOD,BolDif,StdDev,PriceDistance,DailyVol");
-			        }
+			        List<TradeParameters> trendList = completedTradeParams
+			            .Where(tp => tp.TradeType == TradeType.Trend)
+			            .ToList();
 			
-			        using (StreamWriter writer = new StreamWriter(filePath, append: true))
-			        {
-			            if (!headerExists)
-			            {
-			                writer.WriteLine("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,MADif,TOD,BolDif,StdDev,PriceDistance,DailyVol");
-			            }
+			        // Write Regress trades to inctrain_regression.csv
+			        if (regressList.Count > 0)
+			            WriteTradesToSingleFile(regressList, regressionIncrementalPath);
 			
-			            StringBuilder sb = new StringBuilder();
-			            foreach (var tradeParams in completedTradeParams)
-			            {
-			                var lastCompletedTrade = tradeParams.Trades.FirstOrDefault(t => t.IsCompleted);
-							
-							//foreach(var trade in tradeParams.Trades){
-			                if (lastCompletedTrade != null)
-			                {
-			                    sb.AppendFormat("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10}\n",
-			                        Math.Round(lastCompletedTrade.WinRate, 2),
-			                        lastCompletedTrade.ImbVol,
-			                        Math.Round(lastCompletedTrade.Ratio, 2),
-			                        lastCompletedTrade.AdvDetection,
-			                        Math.Round(lastCompletedTrade.VolumeSpeed, 2),
-								  	Math.Round(lastCompletedTrade.MADif, 2),
-									Math.Round(lastCompletedTrade.BolDif, 2),
-									Math.Round(lastCompletedTrade.StdDev, 2),
-									Math.Round(lastCompletedTrade.TOD, 2),
-									Math.Round(lastCompletedTrade.PriceDistance, 2),
-									lastCompletedTrade.DailyVol
-									
-			                    );
-			                }
-							//}
-			            }
-			            writer.Write(sb.ToString());
-			        }
+			        // Write Trend trades to inctrain_trend.csv
+			        if (trendList.Count > 0)
+			            WriteTradesToSingleFile(trendList, trendIncrementalPath);
+			
+			        // Clear after writing
 			        completedTradeParams.Clear();
 			    }
 			    catch (Exception ex)
@@ -1099,20 +1089,84 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        Print($"Error writing to CSV: {ex.Message}");
 			    }
 			}
-
-	
+			
+			
+			/// <summary>
+			/// Helper function to write ANY list of TradeParameters to a single CSV file,
+			/// ensuring the correct header and appending completed trades.
+			/// </summary>
+			private void WriteTradesToSingleFile(List<TradeParameters> tradeParamsList, string filePath)
+			{
+			    if (tradeParamsList == null || tradeParamsList.Count == 0) 
+			        return;
+			
+			    // Ensure directory
+			    string directory = Path.GetDirectoryName(filePath);
+			    if (!Directory.Exists(directory))
+			        Directory.CreateDirectory(directory);
+			
+			    bool fileExists   = File.Exists(filePath);
+			    bool headerExists = false;
+			
+			    if (fileExists)
+			    {
+			        string firstLine = File.ReadLines(filePath).FirstOrDefault();
+			        headerExists = firstLine != null 
+			                       && firstLine.StartsWith("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,MADif,BolDif,StdDev,TOD,PriceDistance,AverageBarVol");
+			    }
+			
+			    using (StreamWriter writer = new StreamWriter(filePath, append: true))
+			    {
+			        // If no header yet, write it once
+			        if (!headerExists)
+			        {
+			            writer.WriteLine("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,MADif,BolDif,StdDev,TOD,PriceDistance,AverageBarVol");
+			            headerExists = true;
+			        }
+			
+			        // Build CSV lines for each completed trade in each TradeParameters
+			        StringBuilder sb = new StringBuilder();
+			        foreach (var tradeParams in tradeParamsList)
+			        {
+						                 // Only write the *last* completed trade in each TradeParameters
+			            var lastCompletedTrade = tradeParams.Trades
+			                .LastOrDefault(t => t.IsCompleted);
+			
+			            if (lastCompletedTrade != null)
+			            {
+			                sb.AppendFormat("{0},{1},{2},{3},{4},{5},{6},{7},{8},{9},{10}\n",
+			                    Math.Round(lastCompletedTrade.WinRate, 2),
+			                    lastCompletedTrade.ImbVol,
+			                    Math.Round(lastCompletedTrade.Ratio, 2),
+			                    lastCompletedTrade.AdvDetection,
+			                    Math.Round(lastCompletedTrade.VolumeSpeed, 2),
+			                    Math.Round(lastCompletedTrade.MADif, 2),
+			                    Math.Round(lastCompletedTrade.BolDif, 2),
+			                    Math.Round(lastCompletedTrade.StdDev, 2),
+			                    Math.Round(lastCompletedTrade.TOD, 2),
+			                    Math.Round(lastCompletedTrade.PriceDistance, 2),
+			                    lastCompletedTrade.AverageBarVol
+			                );
+			            }
+			        }
+			
+			        writer.Write(sb.ToString());
+			    }
+			}
+				
 			private void WriteCurrentPredictiveValuesToServer()
 			{
+				Print( PATIMachineLearningInputsV2().TimeOfDay[0]);
 				var predictiveValues = new
 				{
 					WinRate = targetWinRate,
 					VolumeSpeed = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1],
 					MADif = PATIMachineLearningInputsV2().MovingAvgDiff[1],
-					TOD = PATIMachineLearningInputsV2().TimeOfDay[1],
 					BolDif = PATIMachineLearningInputsV2().BollingerDiff[1],
 					StdDev = PATIMachineLearningInputsV2().StdDevBB[1],
-					PriceDistance =priceDistance,
-					DailyVol = dailyVolume,
+					TOD = PATIMachineLearningInputsV2().TimeOfDay[0],
+					PriceDistance = priceDistance,
+					AverageBarVol = avgBarVolume,
 					CurrentModel = (isRegressionMode && !isTrendMode) ? "Regression" : "Trend"
 				};
 				

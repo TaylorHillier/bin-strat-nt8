@@ -107,12 +107,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 			AverageBarVol = averageBarVol;
 		}
 		
-		public void UpdateWinRate()
-		{
-		    int totalTrades = WinCount + LossCount;
-			TradeCount = totalTrades;
-		    WinRate = totalTrades > 0 ? (double)WinCount / totalTrades : 0;
-		}
 	}
 
 	public enum TradeType{
@@ -425,18 +419,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 				StrategyStartTime = Time[0];
 			}
 
-		    if (CurrentBar != activeBar )
+		    if (CurrentBar != activeBar)
 		    {
+				activeBar = CurrentBar;
 				
 				prevDelta=buysAtBar.Values.Sum() - sellsAtBar.Values.Sum();
-				if(State==State.Realtime && Optimise && MLOn)
-				{
-				  WriteCurrentPredictiveValuesToServer();
-				   ReadOptimizedParamsFromServer();
-				}
 				
 				UpdateHighsAndLows();
-		        activeBar = CurrentBar;
 				
 				dailyBars++;
 				
@@ -474,45 +463,38 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 		        // Add this bar's volume to dailyVolume
 		        dailyVolume += Volume[0];
-			
-					
 		    }
 				
 			avgBarVolume = dailyVolume / dailyBars;
-				
-			if(pastTime){
-				InitializeTradeParams();
-			}
 			// Update simulated trades and check for target or stop loss
 			
 		}
 						
 		double lowOfBar = 999999999;
 		double highOfBar = 0;
-		
-
 		double priceDifference;
-
-
 		
 		private void ProcessTradeParams(MarketDataEventArgs e)
 	    {
-	        var completedTradeParams = new List<TradeParameters>();
-	
-	        foreach (var tradeParams in tradeParamsList.ToList())
-	        {
-	            if (e.Time > tradeParams.TradeWindowEndTime)
-	            {
-	                UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
-	                completedTradeParams.Add(tradeParams);
-	                tradeParamsList.Remove(tradeParams);
-	            }
-	        }
-	
-	        if (completedTradeParams.Any())
-	        {
-	            WriteTradesToCsv(completedTradeParams);
-	        }
+	       var completedTradeParams = new List<TradeParameters>();
+						
+			for (int i = tradeParamsList.Count - 1; i >= 0; i--)
+			{
+				var tradeParams = tradeParamsList[i];
+				
+				if (e.Time > tradeParams.TradeWindowEndTime)
+				{
+					UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
+					completedTradeParams.Add(tradeParams);
+				}
+			}
+			
+			tradeParamsList.RemoveAll(tradeParams => e.Time > tradeParams.TradeWindowEndTime);
+			
+			if (completedTradeParams.Any())
+			{
+				WriteTradesToCsv(completedTradeParams);
+			}
 	    }
 		
 		double startOfDay = 143000;
@@ -521,29 +503,44 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private double dailyVolume = 0;
 		private DateTime currentDay = DateTime.MinValue; // Will store the current day's date
 		bool pastTime = false;
-		 DateTime currentTime;
+		DateTime currentTime;
+		double price = 0;
+		double lastSampleBar = 0;
 
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 //			if ((State == State.Historical && trainModel) || (State == State.Realtime))
 			{
-				ProcessTradeParams(e);
-				
-				 pastTime = e.Time - lastSampleTime > TimeSpan.FromSeconds(sampleInterval);
-				if (e.Time - lastSampleTime > TimeSpan.FromSeconds(sampleInterval) && CurrentBar != activeBar)
-		        {
-		            lastSampleTime = e.Time;
-					
-		        }	
-
+			
 				if (e.MarketDataType == MarketDataType.Last)
 				{
-					
-					 currentTime = e.Time;
-					double price = e.Price;
+					currentTime = e.Time;
+					price = e.Price;
 					double volume = e.Volume;
 					
-					
+					ProcessTradeParams(e);
+				
+					pastTime = e.Time - lastSampleTime > TimeSpan.FromSeconds(sampleInterval);
+								
+					if(pastTime)
+					{
+						lastSampleTime = e.Time;
+						
+						if(CurrentBar > lastSampleBar){
+							InitializeTradeParams();
+							lastSampleBar = CurrentBar;
+						}
+						
+						if(State==State.Realtime && Optimise && MLOn)
+						{
+							
+						  WriteCurrentPredictiveValuesToServer();
+						  ReadOptimizedParamsFromServer();
+							
+						}
+							
+					}
+				
 					if (price > (e.Ask + e.Bid) / 2)
 					{
 						RecordTrade(buysAtBar, price, volume, e);
@@ -580,36 +577,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 					} else{
 						priceSpeed = 0;
 					}
-					
-					//if (State == State.Realtime)
-					{
-						UpdateTotalBuysAndSells(e.Price);
-					}
+		
+					UpdateTotalBuysAndSells(e.Price);
 					
 					UpdateSimTrades(ProfitTarget, StopLoss, e.Price);
 					
-					if ((incTrain && !trainModel) || State == State.Historical)
-					{
-						var completedTradeParams = new List<TradeParameters>();
-						
-						for (int i = tradeParamsList.Count - 1; i >= 0; i--)
-						{
-							var tradeParams = tradeParamsList[i];
-							
-							if (Time[0] > tradeParams.TradeWindowEndTime)
-							{
-								UpdateWinRateForTradeParams(tradeParams, ProfitTarget, StopLoss);
-								completedTradeParams.Add(tradeParams);
-							}
-						}
-						
-						tradeParamsList.RemoveAll(tradeParams => Time[0] > tradeParams.TradeWindowEndTime);
-						
-						if (completedTradeParams.Any())
-						{
-							WriteTradesToCsv(completedTradeParams);
-						}
-					}
+					
 				}
 				
 				if (e.Price > highOfBar && e.Volume != 0)
@@ -658,9 +631,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 						
 						initialLetters = symbol.Substring(0, index);
 						
-						DateTime currentTime = Time[0];
+						DateTime currentTime = e.Time;
 						
-						if (Time[0] - lastDay > TimeSpan.FromHours(1))
+						if (e.Time - lastDay > TimeSpan.FromHours(1))
 						{
 							Print("Current Date:" + Time[0]);
 							lastDay = Time[0];
@@ -816,7 +789,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			private void InitializeTradeParams()
 			{
 			    DateTime tradeWindowEndTime = currentTime.AddSeconds(tradesWindowMinutes);
-
+			
 			    if (initialLetters == "NQ")
 				{
 					
@@ -873,7 +846,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 								tradeType
 				            );
 							
-							Print(tradeParams.TradeType);
+							Print( Math.Abs(buyVolume - sellVolume));
+							Print( Math.Min(buyVolume, sellVolume));
+							Print(tradeRatio);
+							Print(tradeWindowEndTime);
+							Print(currentTime);
 				            tradeParamsList.Add(tradeParams);
 				        }
 				
@@ -937,9 +914,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    
 		    return aggregatedVolumes;
 		}
+		
 			private void SimulateTrade(TradeParameters tradeParams, string direction, double price)
 			{
-			    double entryPrice = Close[0];
+			    double entryPrice = price;
 			    
 			    SimTrade newTrade = new SimTrade(
 			        tradeParams.ImbVolThreshold,
@@ -947,10 +925,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        tradeParams.RatioThreshold,
 			        price,
 					direction,
-					PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1],
-					PATIMachineLearningInputsV2().MovingAvgDiff[1],
-					PATIMachineLearningInputsV2().BollingerDiff[1],
-					PATIMachineLearningInputsV2().StdDevBB[1],
+					PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0],
+					PATIMachineLearningInputsV2().MovingAvgDiff[0],
+					PATIMachineLearningInputsV2().BollingerDiff[0],
+					PATIMachineLearningInputsV2().StdDevBB[0],
 					PATIMachineLearningInputsV2().TimeOfDay[0],
 					priceDistance,
 					avgBarVolume
@@ -1156,14 +1134,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 			private void WriteCurrentPredictiveValuesToServer()
 			{
-				Print( PATIMachineLearningInputsV2().TimeOfDay[0]);
+				
 				var predictiveValues = new
 				{
 					WinRate = targetWinRate,
-					VolumeSpeed = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[1],
-					MADif = PATIMachineLearningInputsV2().MovingAvgDiff[1],
-					BolDif = PATIMachineLearningInputsV2().BollingerDiff[1],
-					StdDev = PATIMachineLearningInputsV2().StdDevBB[1],
+					VolumeSpeed = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0],
+					MADif = PATIMachineLearningInputsV2().MovingAvgDiff[0],
+					BolDif = PATIMachineLearningInputsV2().BollingerDiff[0],
+					StdDev = PATIMachineLearningInputsV2().StdDevBB[0],
 					TOD = PATIMachineLearningInputsV2().TimeOfDay[0],
 					PriceDistance = priceDistance,
 					AverageBarVol = avgBarVolume,
@@ -1350,6 +1328,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 			  if (orderId.Length > 0 || atmStrategyId.Length > 0 || tradeTaken || (!isLongMode && !isShortMode))
 		        return;
+			  
 		    if (State == State.Realtime )
 		    {
 		   // VolumeProfileAnalysis vpAnalysis = AnalyzeVolumeProfile();

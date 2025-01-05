@@ -41,6 +41,26 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public string ATMStrategy
 		{ get; set; }
 		
+		[NinjaScriptProperty]
+		[Display(Name="Upper1", Order=1, GroupName="Fib RSI")]
+		public int Upper1
+		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="Upper2", Order=1, GroupName="Fib RSI")]
+		public int Upper2
+		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="Lower1", Order=1, GroupName="Trajectory RSI")]
+		public int Lower1
+		{ get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="Lower2", Order=1, GroupName="Trajectory RSI")]
+		public int Lower2
+		{ get; set; }
+		
         // Define trajectory lengths
         private readonly int[] trajectoryLengths = {2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 233, 377, 610};
 
@@ -117,6 +137,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Disable this property for performance gains in Strategy Analyzer optimizations
                 // See the Help Guide for additional information
                 IsInstantiatedOnEachOptimizationIteration = true;
+				
+				Upper1 = 70;
+				Upper2 = 70;
+				Lower1 = 30;
+				Lower2 = 30;
             }
             else if (State == State.DataLoaded)
             {
@@ -222,7 +247,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 			if (orderId.Length == 0 && atmStrategyId.Length == 0){
 		               
-				if(TaylorFRSI(5,3)[0] < 30 &&  MarketTrajectoryRSIByLength(5,3)[0] < 30){
+				if(TaylorFRSI(5,3)[0] < Lower1 &&  MarketTrajectoryRSIByLength(5,3)[0] < Lower2){
 					 
 					if(State == State.Realtime){
 						isAtmStrategyCreated = false;
@@ -252,7 +277,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						}
 						EnterLong();
 					}
-				} else if (TaylorFRSI(5,3)[0] > 70 && MarketTrajectoryRSIByLength(5,3)[0] > 70){
+				} else if (TaylorFRSI(5,3)[0] > Upper1 && MarketTrajectoryRSIByLength(5,3)[0] > Upper2){
 				 
 					if(State == State.Realtime){
 						isAtmStrategyCreated = false;
@@ -285,9 +310,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 				}
 			}
 			
-			if(TaylorFRSI(5,3)[0] > 70 && MarketTrajectoryRSIByLength(5,3)[0] > 70){
+			if(TaylorFRSI(5,3)[0] > Upper1 && MarketTrajectoryRSIByLength(5,3)[0] > Upper2){
 				Draw.ArrowDown(this,$"sell{CurrentBar}",true,0,Close[0],Brushes.Red);
-			}else if(TaylorFRSI(5,3)[0] < 30 &&  MarketTrajectoryRSIByLength(5,3)[0] < 30){
+			}else if(TaylorFRSI(5,3)[0] < Lower1 &&  MarketTrajectoryRSIByLength(5,3)[0] < Lower2){
 				Draw.ArrowUp(this,$"buy{CurrentBar}",true,0,Close[0],Brushes.Green);
 			}
 			
@@ -310,19 +335,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        else if (atmStrategyId.Length > 0 && atmStrategyId != string.Empty && GetAtmStrategyMarketPosition(atmStrategyId) == Cbi.MarketPosition.Flat)
 		            atmStrategyId = string.Empty;
 				
-				if (atmStrategyId.Length > 0)
-				{
+//				if (atmStrategyId.Length > 0)
+//				{
 					
-					if (GetAtmStrategyMarketPosition(atmStrategyId) != MarketPosition.Flat){
-						if(above && totalSlope < -7){
-							 AtmStrategyClose(atmStrategyId);
-						} 
+//					if (GetAtmStrategyMarketPosition(atmStrategyId) != MarketPosition.Flat){
+//						if(above && totalSlope < -7){
+//							 AtmStrategyClose(atmStrategyId);
+//						} 
 						
-						if( below && totalSlope > 7){
-							 AtmStrategyClose(atmStrategyId);
-						}
-					}
-				}
+//						if( below && totalSlope > 7){
+//							 AtmStrategyClose(atmStrategyId);
+//						}
+//					}
+//				}
 		
 		    }
 

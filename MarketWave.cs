@@ -79,6 +79,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{ get; set; }
 		
 		[NinjaScriptProperty]
+		[Range(0.0, double.MaxValue)]
+		[Display(Name = "Time Threshold", Order = 2, GroupName = "Parameters")]
+		public double TimeThreshold
+		{ get; set; }
+		
+		[NinjaScriptProperty]
 		[Display(Name="ATMStrategy", Order=1, GroupName="ATM Strategy")]
 		public string ATMStrategy
 		{ get; set; }
@@ -218,6 +224,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private double lowestPriceLevel = double.MaxValue;
 		private int MaxPriceLevels = 10; // Adjust as needed
 		private int currentStreak = 0;
+		private DateTime lastTickTime = DateTime.MinValue;  
        		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 			
@@ -255,47 +262,75 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    double midPrice = (e.Bid + e.Ask) / 2;
 		    DateTime eventTime = e.Time;
 		
-		    // Get the aggregated price level
-		    double newPriceLevel = Math.Round(GetAggregatedPriceLevel(price), 2); // Round to 2 decimal places
+		    // ----------------------------------------------------------------------
+		    // 1) Continuous Time Accumulation
+		    //    Calculate how many seconds have passed since the last tick
+		    // ----------------------------------------------------------------------
+		    if (lastTickTime == DateTime.MinValue)
+		    {
+		        // First valid tick
+		        lastTickTime = eventTime;
+		        currentPriceLevel = Math.Round(GetAggregatedPriceLevel(price), 2);
+		        levelEntryTime = eventTime;
+		    }
+		    else
+		    {
+		        // How many seconds have passed since the previous tick?
+		        double deltaSeconds = (eventTime - lastTickTime).TotalSeconds;
+		        lastTickTime = eventTime;
 		
-		   if (Math.Abs(newPriceLevel - currentPriceLevel) >= TickSize)
-			{
-			    // Price level has changed
-			    TimeSpan deltaTime = eventTime - levelEntryTime;
-			    double deltaSeconds = deltaTime.TotalSeconds;
-			
-			    if (!priceLevels.ContainsKey(currentPriceLevel))
-			    {
-			        priceLevels[currentPriceLevel] = new PriceLevelData();
-			    }
-			    priceLevels[currentPriceLevel].TimeSpent += deltaSeconds;
-			
-			    // Update the global currentStreak variable
-			    if (newPriceLevel > currentPriceLevel)
-			    {
-			        if (priceLevels[currentPriceLevel].wasLastUp == false)
-			        {
-			             priceLevels[currentPriceLevel].CurrentStreak = 0;
-			        }
-			         priceLevels[currentPriceLevel].CurrentStreak += e.Volume;
-			       priceLevels[currentPriceLevel].wasLastUp = true;
-			    }
-			    else if (newPriceLevel < currentPriceLevel)
-			    {
-			          if (priceLevels[currentPriceLevel].wasLastUp == true)
-			        {
-			            priceLevels[currentPriceLevel].CurrentStreak = 0;
-			        }
-			        priceLevels[currentPriceLevel].CurrentStreak -= e.Volume;
-			        priceLevels[currentPriceLevel].wasLastUp = false;
-			    }
-	
-			    currentPriceLevel = newPriceLevel;
-			    levelEntryTime = eventTime;
-			}
+		        // Accumulate those deltaSeconds in the *current* price level
+		        if (!priceLevels.ContainsKey(currentPriceLevel))
+		            priceLevels[currentPriceLevel] = new PriceLevelData();
 		
+		        priceLevels[currentPriceLevel].TimeSpent += deltaSeconds;
+		    }
 		
-			
+		    // ----------------------------------------------------------------------
+		    // 2) Check if price has moved to a *new* aggregated level
+		    //    by at least one TickSize
+		    // ----------------------------------------------------------------------
+		    double newPriceLevel = Math.Round(GetAggregatedPriceLevel(price), 2);
+		    if (Math.Abs(newPriceLevel - currentPriceLevel) >= TickSize)
+		    {
+		        // We have switched zones
+		        PriceLevelData oldLevelData = priceLevels[currentPriceLevel];
+		
+		        // Update streak logic (increment or decrement) *once* when we leave the old zone
+		        bool wasLastUp = oldLevelData.wasLastUp;
+		
+		        if (newPriceLevel > currentPriceLevel)
+		        {
+		            // Moved upward
+		            if (!wasLastUp){
+		                oldLevelData.CurrentStreak = 1;      // reset to +1 if direction changed
+					 	priceLevels[currentPriceLevel].TimeSpent = 0;
+					} else
+		                oldLevelData.CurrentStreak++;        // continue incrementing if direction remains "up"
+		
+		            oldLevelData.wasLastUp = true;
+		        }
+		        else
+		        {
+		            // Moved downward
+		            if (wasLastUp){
+		                oldLevelData.CurrentStreak = 1;      // reset to +1 if direction changed
+					 	priceLevels[currentPriceLevel].TimeSpent = 0;
+					}else
+		                oldLevelData.CurrentStreak--;        // continue decrementing if direction remains "down"
+		
+		            oldLevelData.wasLastUp = false;
+		        }
+		
+		        // Now officially switch to the *new* price level
+		        currentPriceLevel = newPriceLevel;
+		        levelEntryTime = eventTime;
+		
+		        // Ensure the new level is in the dictionary
+		        if (!priceLevels.ContainsKey(currentPriceLevel))
+		            priceLevels[currentPriceLevel] = new PriceLevelData();
+		    }
+		
 		    // Update volume at the current price level
 		    if (!priceLevels.ContainsKey(currentPriceLevel))
 		    {
@@ -342,7 +377,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    if (priceLevels.TryGetValue(currentPriceLevel, out var currentLevelData) && !tradeTaken)
 		    {
 
-		        if (currentLevelData.CurrentStreak >= HighThreshold || currentLevelData.CurrentStreak <= LowThreshold)
+		        if (currentLevelData.TimeSpent >= TimeThreshold )
 		        {
 				
 					bool askImbalance = currentLevelData.AskVolume > currentLevelData.BidVolume ;
@@ -352,9 +387,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		            if (orderId.Length > 0 || atmStrategyId.Length > 0 || State != State.Realtime || Position.MarketPosition != MarketPosition.Flat)
 		                return;
 		
-					Print($"Trade Taken. Ask Volume: {currentLevelData.AskVolume}, Bid Volume: {currentLevelData.BidVolume}, Importance Score: {currentLevelData.ImportanceScore}, Time at level {currentLevelData.TimeSpent}, Ratio: ({Math.Max(currentLevelData.BidVolume,currentLevelData.AskVolume)} / {Math.Min(currentLevelData.BidVolume,currentLevelData.AskVolume)})");
+					Print($"Trade Taken. Ask Volume: {currentLevelData.AskVolume}, Bid Volume: {currentLevelData.BidVolume}, Importance Score: {currentLevelData.ImportanceScore}, Time at level {currentLevelData.TimeSpent}, Streak: {currentLevelData.CurrentStreak}");
 				
-			            if (isLongMode &&  currentLevelData.CurrentStreak > 0 && isTrendMode &&  askImbalance)
+			            if (isLongMode && isTrendMode && currentLevelData.CurrentStreak > HighThreshold )
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -376,7 +411,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							tradeTaken = true;
 			                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
 			            } 
-      					if (isLongMode &&  askImbalance && isRegressionMode &&  currentLevelData.CurrentStreak < 0)
+      					if (isLongMode  && currentLevelData.CurrentStreak > HighThreshold && isRegressionMode)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -402,7 +437,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 						
 					
-			            if (isShortMode &&  currentLevelData.CurrentStreak < 0 && isTrendMode && bidImbalance)
+			            if (isShortMode &&  isTrendMode  && currentLevelData.CurrentStreak < LowThreshold)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -425,7 +460,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                Print($"[{Time[0]}] Entering Short Position (Auto Arm)");
 			            }
 					
-			            if (isShortMode && bidImbalance && isRegressionMode &&  currentLevelData.CurrentStreak > 0)
+			            if (isShortMode  && currentLevelData.CurrentStreak < LowThreshold && isRegressionMode )
 			            {
 			               
 			                isAtmStrategyCreated = false;

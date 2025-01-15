@@ -302,10 +302,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        if (newPriceLevel > currentPriceLevel)
 		        {
 		            // Moved upward
-		            if (!wasLastUp){
-		                oldLevelData.CurrentStreak = 1;      // reset to +1 if direction changed
-					 	priceLevels[currentPriceLevel].TimeSpent = 0;
-					} else
+//		            if (!wasLastUp){
+//		                oldLevelData.CurrentStreak = 1;      // reset to +1 if direction changed
+//					 	priceLevels[currentPriceLevel].TimeSpent = 0;
+//					} else
 		                oldLevelData.CurrentStreak++;        // continue incrementing if direction remains "up"
 		
 		            oldLevelData.wasLastUp = true;
@@ -313,10 +313,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        else
 		        {
 		            // Moved downward
-		            if (wasLastUp){
-		                oldLevelData.CurrentStreak = 1;      // reset to +1 if direction changed
-					 	priceLevels[currentPriceLevel].TimeSpent = 0;
-					}else
+//		            if (wasLastUp){
+//		                oldLevelData.CurrentStreak = 1;      // reset to +1 if direction changed
+//					 	priceLevels[currentPriceLevel].TimeSpent = 0;
+//					}else
 		                oldLevelData.CurrentStreak--;        // continue decrementing if direction remains "down"
 		
 		            oldLevelData.wasLastUp = false;
@@ -389,7 +389,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 					Print($"Trade Taken. Ask Volume: {currentLevelData.AskVolume}, Bid Volume: {currentLevelData.BidVolume}, Importance Score: {currentLevelData.ImportanceScore}, Time at level {currentLevelData.TimeSpent}, Streak: {currentLevelData.CurrentStreak}");
 				
-			            if (isLongMode && isTrendMode && currentLevelData.CurrentStreak > HighThreshold )
+			            if (isLongMode && isTrendMode && currentLevelData.CurrentStreak >= HighThreshold )
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -411,7 +411,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							tradeTaken = true;
 			                Print($"[{Time[0]}] Entering Long Position (Auto Arm)");
 			            } 
-      					if (isLongMode  && currentLevelData.CurrentStreak > HighThreshold && isRegressionMode)
+      					if (isLongMode  && currentLevelData.CurrentStreak >= HighThreshold && isRegressionMode)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -437,7 +437,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 						
 					
-			            if (isShortMode &&  isTrendMode  && currentLevelData.CurrentStreak < LowThreshold)
+			            if (isShortMode &&  isTrendMode  && currentLevelData.CurrentStreak <= LowThreshold)
 			            {
 			               
 			                isAtmStrategyCreated = false;
@@ -460,7 +460,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                Print($"[{Time[0]}] Entering Short Position (Auto Arm)");
 			            }
 					
-			            if (isShortMode  && currentLevelData.CurrentStreak < LowThreshold && isRegressionMode )
+			            if (isShortMode  && currentLevelData.CurrentStreak <= LowThreshold && isRegressionMode )
 			            {
 			               
 			                isAtmStrategyCreated = false;

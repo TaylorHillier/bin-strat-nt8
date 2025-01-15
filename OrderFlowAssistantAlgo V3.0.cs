@@ -127,16 +127,31 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public bool allowInTrade { get; set; } = true;
 		public TradeType TradeType  { get; set; }
 		public double TimeSpent { get; }
+		public double Streak {get;}
 		
-	    public TradeParameters(double imbVolThreshold, double advDetectionThreshold, double ratioThreshold, double timeSpent, DateTime tradeWindowEndTime, TradeType tradeType)
+	    public TradeParameters(double imbVolThreshold, double advDetectionThreshold, double ratioThreshold, double timeSpent, double streak, DateTime tradeWindowEndTime, TradeType tradeType)
 	    {
 	        ImbVolThreshold = imbVolThreshold;
 	        AdvDetectionThreshold = advDetectionThreshold;
 	        RatioThreshold = ratioThreshold;
 			TimeSpent = timeSpent;
+			Streak  = streak;
 	        TradeWindowEndTime = tradeWindowEndTime; // Initialize the property
 			TradeType = tradeType;
 	    }
+	}
+
+	public class PriceLevelData
+	{
+	  
+		public double CurrentStreak {get; set; }
+		public string LastTrade  {get; set; }
+		public bool wasLastUp  {get; set; }
+        public PriceLevelData()
+        {
+           
+			CurrentStreak = 0;
+        }
 	}
 
 	#endregion
@@ -272,6 +287,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		bool tradeTaken = false;
 		
 		bool lowSpread = false;
+		
+		private Dictionary<double, PriceLevelData> priceLevels;
 		#endregion
 		
 		#region Core NT Strategy Functions
@@ -306,6 +323,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 				// See the Help Guide for additional information
 				IsInstantiatedOnEachOptimizationIteration	= true;
 			
+			}else if (State == State.Configure){
+				 priceLevels = new Dictionary<double, PriceLevelData>();
 			}
 			else if (State == State.Historical)
 			{
@@ -442,6 +461,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				
 				dailyBars++;
 				
+				 priceLevels.Clear();
 				buysAtBar.Clear();
 		        sellsAtBar.Clear();
 				timeAtBar.Clear();
@@ -535,6 +555,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		double bid = 0;
 		// We'll keep these fields to help measure time spent at the "current price."
 		private double currentPriceLevel = 0;
+		private double currentAggPriceLevel = 0;
 		private DateTime levelEntryTime  = DateTime.MinValue;
 
 		
@@ -543,7 +564,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
-			if(CurrentBar < 1)
+			if(CurrentBar < 3)
 				return;
 			
 				if (e.MarketDataType == MarketDataType.Last)
@@ -574,13 +595,57 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                    timeAtBar[currentPriceLevel] = 0.0;
 			
 			                timeAtBar[currentPriceLevel] += deltaSecs;
-			
+							
 			                // Update references
 			                currentPriceLevel = newPrice;
 			                levelEntryTime    = eventTime;
 			            }
 			        }
+					
+					double newPriceLevel = Math.Round(GetAggregatedPriceLevel(price), 2);
+		
+				    if (Math.Abs(newPriceLevel - currentAggPriceLevel) >= TickSize)
+				    {
+				        // We have switched zones
+						
+						if (!priceLevels.ContainsKey(currentAggPriceLevel))
+    						priceLevels[currentAggPriceLevel] = new PriceLevelData();
+						
+				        PriceLevelData oldLevelData = priceLevels[currentAggPriceLevel];
 				
+				        // Update streak logic (increment or decrement) *once* when we leave the old zone
+				        bool wasLastUp = oldLevelData.wasLastUp;
+				
+				        if (newPriceLevel > currentAggPriceLevel)
+				        {
+
+				                oldLevelData.CurrentStreak++;        // continue incrementing if direction remains "up"
+				
+				            oldLevelData.wasLastUp = true;
+				        }
+				        else
+				        {
+
+				                oldLevelData.CurrentStreak--;        // continue decrementing if direction remains "down"
+				
+				            oldLevelData.wasLastUp = false;
+				        }
+				
+				        // Now officially switch to the *new* price level
+				        currentAggPriceLevel = newPriceLevel;
+				
+						 // Ensure the new level is in the dictionary
+		        		if (!priceLevels.ContainsKey(currentAggPriceLevel))
+		            		priceLevels[currentAggPriceLevel] = new PriceLevelData();
+					}
+					
+					    // Update volume at the current price level
+				    if (!priceLevels.ContainsKey(currentAggPriceLevel))
+				    {
+				        priceLevels[currentAggPriceLevel] = new PriceLevelData();
+						
+				    }
+					
 					currentTime = e.Time;
 					price = e.Price;
 					double volume = e.Volume;
@@ -655,6 +720,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 						aggregatedBuys = AggregateVolumesIntoGroups(buysAtBar, lowOfBar, highOfBar);
 						aggregatedSells = AggregateVolumesIntoGroups(sellsAtBar, lowOfBar, highOfBar);
 						aggregatedTime = AggregateTimeIntoGroups(timeAtBar, lowOfBar, highOfBar);
+						
 					}
 				
 					if (trainModel || incTrain)
@@ -698,20 +764,23 @@ namespace NinjaTrader.NinjaScript.Strategies
 							double buyVolume = aggregatedBuys.ContainsKey(closestPrice) ? aggregatedBuys[closestPrice] : 0;
 							double sellVolume = aggregatedSells.ContainsKey(closestPrice) ? aggregatedSells[closestPrice] : 0;
 							double timeSpent = aggregatedTime.ContainsKey(closestPrice) ? aggregatedTime[closestPrice] : 0;
-							
+							double streak = 0;
+							if(priceLevels.TryGetValue(currentAggPriceLevel, out var currentLevelData)){
+							 streak = currentLevelData.CurrentStreak;
+							}
 							double imbVol = Math.Abs(buyVolume - sellVolume);
 							double advDetection = Math.Min(buyVolume, sellVolume);
 							double tradeRatio = 0;
 							
 							string trendDirection = "";
 							string regressDirection = "";
-							
+							string direction = "";
 							// Example snippet inside your logic block:
 
 							if (buyVolume > sellVolume)
 							{
 							    tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
-							
+								
 							    // The "Trend" direction is "Long", the "Regression" direction is "Short"
 							    trendDirection   = "Long";
 							    regressDirection = "Short";
@@ -724,16 +793,26 @@ namespace NinjaTrader.NinjaScript.Strategies
 							    trendDirection   = "Short";
 							    regressDirection = "Long";
 							}
+							
+							if(streak > 0){
+								direction = "Long";
+							}else if (streak < 0){
+								direction = "Short";
+							}
 
 							
 							var activeTrades = tradeParamsList.Where(tp => tp.IsActive && tp.TradeWindowEndTime > currentTime);
 							
+							bool moreThan;
+							bool lessThan;
+							
 							foreach (var tradeParams in activeTrades)
 							{
-							    if (advDetection > tradeParams.AdvDetectionThreshold 
-							        && imbVol > tradeParams.ImbVolThreshold 
-							        && tradeRatio > tradeParams.RatioThreshold 
-									&& timeSpent > tradeParams.TimeSpent
+							    if (advDetection >= tradeParams.AdvDetectionThreshold 
+							        && imbVol >= tradeParams.ImbVolThreshold 
+							        && tradeRatio >= tradeParams.RatioThreshold 
+									&& timeSpent >= tradeParams.TimeSpent
+									&& Math.Abs(streak) >= Math.Abs(tradeParams.Streak)
 							        && tradeParams.allowInTrade == true && lowSpread)
 							    {
 							        if (incTrain && !trainModel)
@@ -742,12 +821,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 							             if (tradeParams.TradeType == TradeType.Trend)
 							            {
 							                // e.g. 'trendDirection' is direction with imbalance
-							                SimulateTrade(tradeParams, trendDirection, closePrice, "Trend");
+							                SimulateTrade(tradeParams, direction, closePrice, "Trend");
 							            }
 							            else // TradeType.Regress
 							            {
 							                // e.g. 'regressDirection' is the opposite direction
-							                SimulateTrade(tradeParams, regressDirection, closePrice, "Regression");
+							                SimulateTrade(tradeParams, direction, closePrice, "Regression");
 							            }
 							        }
 							        else
@@ -758,12 +837,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 							                || (isTrendMode && incTrain))
 							            {
 							                // Trend trade
-							                SimulateTrade(tradeParams, trendDirection, closePrice, "Trend");
+							                SimulateTrade(tradeParams, direction, closePrice, "Trend");
 							            }
 							            else
 							            {
 							                // Regression trade
-							                SimulateTrade(tradeParams, regressDirection, closePrice, "Regression");
+							                SimulateTrade(tradeParams, direction, closePrice, "Regression");
 							            }
 							        }
 							    }
@@ -882,7 +961,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		          	 double timeSpent = aggregatedTime.ContainsKey(price)
 				    ? aggregatedTime[price]
 				    : 0;
-
+					
+					double streak  = 0;
+					if(priceLevels.TryGetValue(price, out var currentLevelData)){
+					 streak = currentLevelData.CurrentStreak;
+					}
 		
 		            // Determine direction logic (like before)
 		            if (buyVolume > sellVolume)
@@ -910,6 +993,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                        Math.Min(buyVolume, sellVolume),
 		                        tradeRatio,
 								timeSpent,
+								streak,
 		                        tradeWindowEndTime,
 		                        TradeType.Trend
 		                    );
@@ -921,6 +1005,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                        Math.Min(buyVolume, sellVolume),
 		                        tradeRatio,
 								timeSpent,
+								streak,
 		                        tradeWindowEndTime,
 		                        TradeType.Regress
 		                    );
@@ -941,6 +1026,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                        Math.Min(buyVolume, sellVolume),
 		                        tradeRatio,
 								timeSpent,
+								streak,
 		                        tradeWindowEndTime,
 		                        tradeType
 		                    );
@@ -1044,7 +1130,29 @@ namespace NinjaTrader.NinjaScript.Strategies
 			    return aggregatedResult;
 			}
 			
-
+			private double GetAggregatedPriceLevel(double price)
+			{
+			    // Ensure TickAggregation is at least 1
+			    int tickAggregation = Math.Max(1, levelstotrade);
+			
+			    // Adjust price slightly to avoid floating-point precision issues
+			    double adjustedPrice = price + TickSize * 1e-6;
+			
+			    // Convert price to integer ticks using Math.Floor
+			    int priceInTicks = (int)Math.Floor(adjustedPrice / TickSize);
+			
+			    // Calculate zone index
+			    int zoneIndex = priceInTicks / tickAggregation;
+			
+			    // Calculate the aggregated price in ticks
+			    int aggregatedPriceInTicks = zoneIndex * tickAggregation;
+			
+			    // Convert back to price
+			    double aggregatedPrice = aggregatedPriceInTicks * TickSize;
+			
+			    return aggregatedPrice;
+			}
+			
 			private void SimulateTrade(TradeParameters tradeParams, string direction, double price, string tradingMode)
 			{
 			    double entryPrice = price;
@@ -1464,6 +1572,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			  if (orderId.Length > 0 || atmStrategyId.Length > 0 || tradeTaken || (!isLongMode && !isShortMode))
 		        return;
 			  
+			  
 		    if (State == State.Realtime )
 		    {
 		   // VolumeProfileAnalysis vpAnalysis = AnalyzeVolumeProfile();
@@ -1477,8 +1586,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        isBuyImbalance = cumulativeBuys > cumulativeSells;
 		        isSellImbalance = cumulativeSells > cumulativeBuys;
 		    }
+			if(priceLevels.TryGetValue(currentAggPriceLevel, out var currentLevelData)){
+			
 
-		        if (isLongMode  && isBuyImbalance && isTrendMode && price < ask && lowSpread)
+		        if (isLongMode  && isBuyImbalance && isTrendMode && price < ask && lowSpread && currentLevelData.CurrentStreak > 5)
 		        {
 		              
 		        tradeTaken = true;
@@ -1502,7 +1613,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		         //Print($"Trend mode: Long signal detected with probability {trendLongProb:F2}");
 		            
 		        }
-		        if (isShortMode  && isTrendMode  && isSellImbalance && price > bid && lowSpread)
+		        if (isShortMode  && isTrendMode  && isSellImbalance && price > bid && lowSpread && currentLevelData.CurrentStreak < -5)
 		        {
 		           
 		               
@@ -1527,7 +1638,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                //Print($"Trend mode: Short signal detected with probability {trendShortProb:F2}");
 		            
 		        }
-		        if (isLongMode && isBuyImbalance && isRegressionMode && price > bid && lowSpread )
+		        if (isLongMode && isBuyImbalance && isRegressionMode && price > bid && lowSpread && currentLevelData.CurrentStreak < -5)
 		        {
 		           
 		               
@@ -1552,7 +1663,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		             //Print($"Regression mode: Counter-trend Sell signal detected with probability {reverseLongProb:F2}");
 		            
 		        }
-		      	if (isShortMode && isSellImbalance  && isRegressionMode && price < ask && lowSpread )
+		      	if (isShortMode && isSellImbalance  && isRegressionMode && price < ask && lowSpread && currentLevelData.CurrentStreak > 5)
 		        {
 		              
 		         	 tradeTaken = true;
@@ -1576,7 +1687,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		             //Print($"Regression mode: Counter-trend Buy signal detected with probability {reverseShortProb:F2}");
 		            
 		        }
-				
+			}
 		  
 		    }
 		}

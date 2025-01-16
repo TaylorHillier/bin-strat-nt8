@@ -62,7 +62,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double ImbVol { get; set; }
 		public double AdvDetection { get; set; }
 		public double Ratio  { get; set; }
-		public double TimeSpent { get; set; }
+		public double Streak { get; set; }
 		public double EntryPrice { get; set; }
 		public string Direction { get; set; }
 		public string Status { get; set; }
@@ -90,12 +90,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		public double PF { get; set; }
 		
-		public SimTrade(double imbVol, double advDetection, double ratio, double timeSpent, double entryPrice, string direction, double volumeSpeed, double maDif, double bolDif, double stdDeviation, double tod, double marketFRSI, double averageBarVol, string tradingMode )
+		public SimTrade(double imbVol, double advDetection, double ratio, double streak, double entryPrice, string direction, double volumeSpeed, double maDif, double bolDif, double stdDeviation, double tod, double marketFRSI, double averageBarVol, string tradingMode )
 		{
 		    ImbVol = imbVol;
 		    AdvDetection = advDetection;
 			Ratio = ratio;
-			TimeSpent = timeSpent;
+			//TimeSpent = timeSpent;
+			Streak = streak;
 		    EntryPrice = entryPrice;
 			Direction = direction;
 			VolumeSpeed = volumeSpeed;
@@ -129,12 +130,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public double TimeSpent { get; }
 		public double Streak {get;}
 		
-	    public TradeParameters(double imbVolThreshold, double advDetectionThreshold, double ratioThreshold, double timeSpent, double streak, DateTime tradeWindowEndTime, TradeType tradeType)
+	    public TradeParameters(double imbVolThreshold, double advDetectionThreshold, double ratioThreshold/*, double timeSpent*/, double streak, DateTime tradeWindowEndTime, TradeType tradeType)
 	    {
 	        ImbVolThreshold = imbVolThreshold;
 	        AdvDetectionThreshold = advDetectionThreshold;
 	        RatioThreshold = ratioThreshold;
-			TimeSpent = timeSpent;
+			//TimeSpent = timeSpent;
 			Streak  = streak;
 	        TradeWindowEndTime = tradeWindowEndTime; // Initialize the property
 			TradeType = tradeType;
@@ -557,7 +558,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private double currentPriceLevel = 0;
 		private double currentAggPriceLevel = 0;
 		private DateTime levelEntryTime  = DateTime.MinValue;
-
+		double newPriceLevel = 0;
 		
 		private double barLow = double.MaxValue;
 		private double barHigh = double.MinValue;
@@ -602,7 +603,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			            }
 			        }
 					
-					double newPriceLevel = Math.Round(GetAggregatedPriceLevel(price), 2);
+					newPriceLevel = Math.Round(GetAggregatedPriceLevel(price), 2);
 		
 				    if (Math.Abs(newPriceLevel - currentAggPriceLevel) >= TickSize)
 				    {
@@ -765,7 +766,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							double sellVolume = aggregatedSells.ContainsKey(closestPrice) ? aggregatedSells[closestPrice] : 0;
 							double timeSpent = aggregatedTime.ContainsKey(closestPrice) ? aggregatedTime[closestPrice] : 0;
 							double streak = 0;
-							if(priceLevels.TryGetValue(currentAggPriceLevel, out var currentLevelData)){
+							if(priceLevels.TryGetValue(newPriceLevel, out var currentLevelData)){
 							 streak = currentLevelData.CurrentStreak;
 							}
 							double imbVol = Math.Abs(buyVolume - sellVolume);
@@ -811,7 +812,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 							    if (advDetection >= tradeParams.AdvDetectionThreshold 
 							        && imbVol >= tradeParams.ImbVolThreshold 
 							        && tradeRatio >= tradeParams.RatioThreshold 
-									&& timeSpent >= tradeParams.TimeSpent
+									//&& timeSpent >= tradeParams.TimeSpent
 									&& Math.Abs(streak) >= Math.Abs(tradeParams.Streak)
 							        && tradeParams.allowInTrade == true && lowSpread)
 							    {
@@ -919,7 +920,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        new SharpDX.RectangleF(metricsX, metricsY + 40, 200, 20), 
 		        textBrush);
 			
-			RenderTarget.DrawText($"Min Time: {timeSpent:F2}", metricsFormat, 
+			RenderTarget.DrawText($"Min Time: {minStreak:F2}", metricsFormat, 
 		        new SharpDX.RectangleF(metricsX, metricsY + 60, 200, 20), 
 		        textBrush);
 		
@@ -963,7 +964,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				    : 0;
 					
 					double streak  = 0;
-					if(priceLevels.TryGetValue(price, out var currentLevelData)){
+					if(priceLevels.TryGetValue(newPriceLevel, out var currentLevelData)){
 					 streak = currentLevelData.CurrentStreak;
 					}
 		
@@ -992,7 +993,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                        Math.Abs(buyVolume - sellVolume),
 		                        Math.Min(buyVolume, sellVolume),
 		                        tradeRatio,
-								timeSpent,
+								//timeSpent,
 								streak,
 		                        tradeWindowEndTime,
 		                        TradeType.Trend
@@ -1004,7 +1005,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                        Math.Abs(buyVolume - sellVolume),
 		                        Math.Min(buyVolume, sellVolume),
 		                        tradeRatio,
-								timeSpent,
+								//timeSpent,
 								streak,
 		                        tradeWindowEndTime,
 		                        TradeType.Regress
@@ -1025,7 +1026,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                        Math.Abs(buyVolume - sellVolume),
 		                        Math.Min(buyVolume, sellVolume),
 		                        tradeRatio,
-								timeSpent,
+								//timeSpent,
 								streak,
 		                        tradeWindowEndTime,
 		                        tradeType
@@ -1161,7 +1162,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        tradeParams.ImbVolThreshold,
 			        tradeParams.AdvDetectionThreshold,
 			        tradeParams.RatioThreshold,
-					tradeParams.TimeSpent,
+					tradeParams.Streak,
 			        price,
 					direction,
 					PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0],
@@ -1323,7 +1324,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			    {
 			        string firstLine = File.ReadLines(filePath).FirstOrDefault();
 			        headerExists = firstLine != null 
-			                       && firstLine.StartsWith("WinRate,ImbVol,ImbRatio,AdversaryDetection,TimeSpent,VolumeSpeed,MADif,BolDif,StdDev,TOD,MarketFRSI,AverageBarVol");
+			                       && firstLine.StartsWith("WinRate,ImbVol,ImbRatio,AdversaryDetection,Streak,VolumeSpeed,MADif,BolDif,StdDev,TOD,MarketFRSI,AverageBarVol");
 			    }
 			
 			    using (StreamWriter writer = new StreamWriter(filePath, append: true))
@@ -1331,7 +1332,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        // If no header yet, write it once
 			        if (!headerExists)
 			        {
-			            writer.WriteLine("WinRate,ImbVol,ImbRatio,AdversaryDetection,TimeSpent,VolumeSpeed,MADif,BolDif,StdDev,TOD,MarketFRSI,AverageBarVol");
+			            writer.WriteLine("WinRate,ImbVol,ImbRatio,AdversaryDetection,Streak,VolumeSpeed,MADif,BolDif,StdDev,TOD,MarketFRSI,AverageBarVol");
 			            headerExists = true;
 			        }
 			
@@ -1350,7 +1351,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			                    lastCompletedTrade.ImbVol,
 			                    Math.Round(lastCompletedTrade.Ratio, 2),
 			                    lastCompletedTrade.AdvDetection,
-								lastCompletedTrade.TimeSpent,
+								lastCompletedTrade.Streak,
 			                    Math.Round(lastCompletedTrade.VolumeSpeed, 2),
 			                    Math.Round(lastCompletedTrade.MADif, 2),
 			                    Math.Round(lastCompletedTrade.BolDif, 2),
@@ -1414,7 +1415,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        int newMinVolume = Convert.ToInt32(optimizedParams["ImbVol"]);
 		        double newRatio = Convert.ToDouble(optimizedParams["ImbRatio"]);
 		        int newDetectionValue = Convert.ToInt32(optimizedParams["AdversaryDetection"]);
-				double newTime = Convert.ToDouble(optimizedParams["TimeSpent"]);
+				double newTime = Convert.ToDouble(optimizedParams["Streak"]);
 		
 		        // Proceed with your logic
 		        if (newMinVolume != prevvol || newRatio != prevratio || newDetectionValue != prevdet || newTime != prevtime)
@@ -1422,9 +1423,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 		            minVolume = newMinVolume;
 		            ratio = newRatio;
 		            detectionValue = newDetectionValue;
-					timeSpent = newTime;
+					minStreak = newTime;
 		
-		            Print($"MinVol: {minVolume}, Ratio: {ratio}, AdvDet: {detectionValue}, Time: {timeSpent}");
+		            Print($"MinVol: {minVolume}, Ratio: {ratio}, AdvDet: {detectionValue}, Streak: {minStreak}");
 		
 		            prevvol = newMinVolume;
 		            prevratio = newRatio;
@@ -1561,7 +1562,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        if (isValidImbalance &&
 		            Math.Abs(cumulativeBuys - cumulativeSells) >= minVolume &&
 		            Math.Min(cumulativeBuys, cumulativeSells) >= detectionValue &&
-		            ratio >= this.ratio && timeSpentAtThisPrice > timeSpent &&
+		            ratio >= this.ratio &&
 		           validPriceLevels == 4)
 		        {
 		            validImb++;
@@ -1586,7 +1587,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        isBuyImbalance = cumulativeBuys > cumulativeSells;
 		        isSellImbalance = cumulativeSells > cumulativeBuys;
 		    }
-			if(priceLevels.TryGetValue(currentAggPriceLevel, out var currentLevelData)){
+			if(priceLevels.TryGetValue(newPriceLevel, out var currentLevelData)){
 			
 
 		        if (isLongMode  && isBuyImbalance && isTrendMode && price < ask && lowSpread && currentLevelData.CurrentStreak > 5)
@@ -1864,8 +1865,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{ get; set; }
 		
 			[NinjaScriptProperty]
-		[Display(Name="Minimum Time Spent", Order=5, GroupName="Imbalances")]
-		public double timeSpent
+		[Display(Name="Minimum Streak", Order=5, GroupName="Imbalances")]
+		public double minStreak
 		{ get; set; }
 		
 		

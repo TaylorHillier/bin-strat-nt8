@@ -245,18 +245,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		int currentWindowId = 0;
 		
-		double fillPrice = 0;
-		bool winner;
-		bool tradeOutcomeEvaluated = false;
-		string lastPosition = string.Empty;
-		double lastFillPrice = 0;
-		double lastLongTarget = 0;
-		double lastShortTarget = 0;
-		double lastLongSL = 0;
-		double lastShortSL = 0;
-		int losers = 0;
-		int winners = 0;
-		
 		#endregion
 		
 		#region Live Trade Variables
@@ -944,9 +932,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 		#endregion
 
 		#region Machine Learning Functions
-			int curwindowid = 0;
-			HashSet<double> sampledLevels = new HashSet<double>(); // HashSet to track sampled levels
-			
 		private void InitializeTradeParams()
 		{
 		    DateTime tradeWindowEndTime = currentTime.AddSeconds(tradesWindowMinutes);

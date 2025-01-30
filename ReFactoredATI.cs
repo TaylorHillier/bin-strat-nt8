@@ -101,6 +101,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		public string TradingMode { get; set; } = "";
 		public int TradeCount {get; set; } = 0;
 		public int WinCount {get; set; } = 0;
+		public int MetWinRate {get; set;} = 0;
 		
 	    public NewTradeParameters(double imbVolThreshold, double advDetectionThreshold, double ratioThreshold, DateTime tradeWindowEndTime, TradeType tradeType)
 	    {
@@ -257,6 +258,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		double price = 0;
 		VolumeData volData;
+		VolumeData pullbackData;
 		public class VolumeData
 		{
 		    public double AskVolume { get; set; }
@@ -267,6 +269,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        AskVolume = askVol;
 		        BidVolume = bidVol;
 		    }
+		}
+		
+		public enum ImbalanceMode{
+			Horizontal,
+			Diagonal
 		}
 		
 		public string  atmStrategyId			= string.Empty;
@@ -283,6 +290,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
 		
 		private Dictionary<double, VolumeData> priceVolumeMap = new Dictionary<double, VolumeData>();
+		private Dictionary<double, VolumeData> pullbackVolumeMap = new Dictionary<double, VolumeData>();
 		#endregion;
 		
 		#region Machine Learning Variables
@@ -292,13 +300,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private List<NewTradeParameters> completedTradeParamsBuffer = new List<NewTradeParameters>();
 		bool pastTime = false;
 		
-		DateTime currentTime;
-		double lowOfBar = 999999999;
-		double highOfBar = 0;
-			
+		DateTime currentTime;		
 		
 		private List<NewTradeParameters> tradeParamsList = new List<NewTradeParameters>();
 		private Dictionary<double, VolumeData> aggregatedVolumes;
+		private Dictionary<double, VolumeData> aggregatedPullbackVol;
 	    private const int MaxHistoricalBars = 1; // Adjust this value as needed
 		
 		private List<NewSimTrade> simTrades = new List<NewSimTrade>();
@@ -492,13 +498,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 			if(CurrentBar > activeBar){
 				activeBar = CurrentBar;
 				aggregatedVolumes = AggregateVolumesIntoGroups(priceVolumeMap, lowOfBar,highOfBar);
-				if(pastTime)
-				{
-					InitializeTradeParams();
-					canUpdate = true;
-				}
+				aggregatedPullbackVol = AggregateVolumesIntoGroups(pullbackVolumeMap, lowOfBar,highOfBar);
 				
 				priceVolumeMap.Clear();
+				pullbackVolumeMap.Clear();
 				tradeTaken = false;
 				
 				highOfBar = 0;
@@ -516,19 +519,38 @@ namespace NinjaTrader.NinjaScript.Strategies
 			
 		}
 		
+		double askPrice = 0;
+		double bidPrice = 0;
+		double highOfBar = double.MinValue;
+		double lowOfBar = double.MaxValue;
+		
 		protected override void OnMarketData(MarketDataEventArgs e)
 		{
 			if(e.MarketDataType != MarketDataType.Last || CurrentBar < 21)
 				return;
-					
+
 			double volume = e.Volume;
 			price = e.Price;
 			currentTime = e.Time;
 			
+			askPrice = e.Ask;
+			bidPrice = e.Bid;
+			
+			if(highOfBar == double.MinValue && lowOfBar == double.MaxValue){
+				highOfBar = price;
+				lowOfBar = price;
+			}
+			
+			if(price > highOfBar){
+				highOfBar = price;
+				pullbackVolumeMap.Clear();
+			}
+			if(price < lowOfBar){
+				lowOfBar = price;
+				pullbackVolumeMap.Clear();
+			}
 			#region Mapping Ask and Bid Volumes
 			
-			double askPrice = e.Ask;
-			double bidPrice = e.Bid;
 			double midpoint = (askPrice + bidPrice) / 2;
 			
 			bool isAskSide = price > midpoint;
@@ -543,28 +565,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 			    priceVolumeMap[price] = volData;
 			}
 			
-			// Accumulate volumes
-			if (isAskSide)
-			    volData.AskVolume += volume;
-			else if (isBidSide)
-			    volData.BidVolume += volume;
+			if(!pullbackVolumeMap.TryGetValue(price, out pullbackData))
+			{
+			    // If price not in dictionary, create a new entry
+			    pullbackData = new VolumeData(0, 0);
+			    pullbackVolumeMap[price] = pullbackData;
+			}
 			
+			// Accumulate volumes
+			if (isAskSide){
+			    volData.AskVolume += volume;
+				pullbackData.AskVolume += volume;
+			}else if (isBidSide){
+			    volData.BidVolume += volume;
+				pullbackData.BidVolume += volume;
+			}
+			
+			aggregatedVolumes = AggregateVolumesIntoGroups(priceVolumeMap, lowOfBar,highOfBar);
+			aggregatedPullbackVol = AggregateVolumesIntoGroups(pullbackVolumeMap, lowOfBar,highOfBar);
 			#endregion;
 			
 			HandleEntryConditions();
 			UpdateSimTrades(ProfitTarget, StopLoss, e.Price);
-			
-			if (e.Price > highOfBar && e.Volume != 0)
-			{
-				highOfBar = e.Price;
-			
-			
-			}
-			if (e.Price < lowOfBar && e.Volume != 0)
-			{
-				lowOfBar = e.Price;
-			
-			}
 			
 			if (e.MarketDataType == MarketDataType.Last)
 			{
@@ -572,19 +594,22 @@ namespace NinjaTrader.NinjaScript.Strategies
 				{
 					return;
 				}
-	
+				
 				if ((incTrain && State == State.Realtime) || trainModel)
 				{
-					aggregatedVolumes = AggregateVolumesIntoGroups(priceVolumeMap, lowOfBar,highOfBar);
 					
 					ProcessTradeParams(e);
 				
 					pastTime = e.Time - lastSampleTime > TimeSpan.FromSeconds(sampleInterval);
 								
-					if(pastTime && canUpdate)
+					if(pastTime)
 					{
+				
+				
+						InitializeTradeParams();
+
 						lastSampleTime = e.Time;
-						canUpdate = false;
+						
 					}
 				}
 			
@@ -612,102 +637,166 @@ namespace NinjaTrader.NinjaScript.Strategies
 					};
 
 					double closestPrice = FindClosestKey(aggregatedVolumes, closePrice);
-					FractalLineSignal fractSignal = ProcessFractalLine();
 					
 					if(aggregatedVolumes.TryGetValue(closestPrice, out VolumeData segmentVol))
 					{
 						double buyVolume = segmentVol.AskVolume;
+						double buyVolumeP1 = aggregatedVolumes.ContainsKey(closestPrice + tickStacking * TickSize) ? aggregatedVolumes[closestPrice + tickStacking * TickSize].AskVolume : buyVolume;
 						double sellVolume = segmentVol.BidVolume;
+						double sellVolumeM1 = aggregatedVolumes.ContainsKey(closestPrice - tickStacking * TickSize) ? aggregatedVolumes[closestPrice - tickStacking * TickSize].BidVolume : sellVolume;
+						
+						double imbVolP1 = sellVolume - buyVolumeP1;
+						double advDetectionP1 = buyVolumeP1;
+						double tradeRatioP1 = sellVolume / buyVolumeP1;
+						
+						double imbVolM1 = buyVolume - sellVolumeM1;
+						double advDetectionM1 = sellVolumeM1;
+						double tradeRatioM1 = buyVolume / sellVolumeM1;
 						
 						double imbVol = Math.Abs(buyVolume - sellVolume);
 						double advDetection = Math.Min(buyVolume, sellVolume);
-						double tradeRatio = 0;
+						double tradeRatio = Math.Min(buyVolume,sellVolume) > 0 ? Math.Max(buyVolume, sellVolume) / Math.Min(buyVolume,sellVolume) : Math.Max(buyVolume, sellVolume);
 						
 						string trendDirection = "";
 						string regressDirection = "";
 						string direction = "";
 						// Example snippet inside your logic block:
 
-						if (buyVolume > sellVolume)
-						{
-						    tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
-							
-						    // The "Trend" direction is "Long", the "Regression" direction is "Short"
-							if(fractSignal == FractalLineSignal.Long)
-						    trendDirection   = "Long";
-							
-							if(fractSignal == FractalLineSignal.Short)
-						    regressDirection = "Short";
-
-							if(fractSignal == FractalLineSignal.Both){
-								trendDirection   = "Long";
-								 regressDirection = "Short";
-
-							}
-							
-						}
-						else if (sellVolume > buyVolume)
-						{
-						    tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
 						
-						    // The "Trend" direction is "Short", the "Regression" direction is "Long"
-							if(fractSignal == FractalLineSignal.Short)
-						    trendDirection   = "Short";
-							
-							if(fractSignal == FractalLineSignal.Long)
-						    regressDirection = "Long";
-
-							if(fractSignal == FractalLineSignal.Both){
-								trendDirection   = "Short";
-								 regressDirection = "Long";
-
-							}
-						}
-						
-						var activeTrades = tradeParamsList.Where(tp => tp.allowInTrade == true);
-						
-						bool moreThan;
-						bool lessThan;
-						
-						foreach (var tradeParams in activeTrades)
-						{
-							
-						    if (advDetection >= tradeParams.AdvDetectionThreshold 
-						        && imbVol >= tradeParams.ImbVolThreshold 
-						        && tradeRatio >= tradeParams.RatioThreshold)  
-						    {
+						if(calculationMode == ImbalanceMode.Horizontal){
+							if (buyVolume > sellVolume)
+							{
+							    tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
 								
-						        if (incTrain && !trainModel)
-						        {
-						            // 1) Always open one "Trend" trade (with the trendDirection you computed)
-						             if (tradeParams.TradeType == TradeType.Trend)
-						            {
-						                // e.g. 'trendDirection' is direction with imbalance
-						                SimulateTrade(tradeParams, trendDirection, closePrice, "Trend");
-						            }
-						            else // TradeType.Regress
-						            {
-						                // e.g. 'regressDirection' is the opposite direction
-						                SimulateTrade(tradeParams, regressDirection, closePrice, "Regression");
-						            }
-						        }
-						        else
-						        {
-						            // Original logic: If you’re in a "Trend" mode => use trendDirection
-						            // If you’re in "Regression" mode => use regressDirection
-						            if ((modelToTrain == TradingMode.Trend && trainModel) 
-						                || (currentMode == TradingMode.Trend && incTrain))
-						            {
-						                // Trend trade
-						                SimulateTrade(tradeParams, trendDirection, closePrice, "Trend");
-						            }
-						            else
-						            {
-						                // Regression trade
-						                SimulateTrade(tradeParams, regressDirection, closePrice, "Regression");
-						            }
-						        }
-						    }
+					
+								trendDirection   = "Long";
+								regressDirection = "Short";
+								
+							}
+							else if (sellVolume > buyVolume)
+							{
+							    tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
+	
+								trendDirection   = "Short";
+								regressDirection = "Long";
+	
+								
+							}
+							
+							var activeTrades = tradeParamsList.Where(tp => tp.allowInTrade == true);
+							
+							bool moreThan;
+							bool lessThan;
+							
+							foreach (var tradeParams in activeTrades)
+							{
+								
+							    if (advDetection >= tradeParams.AdvDetectionThreshold 
+							        && imbVol >= tradeParams.ImbVolThreshold 
+							        && tradeRatio >= tradeParams.RatioThreshold)  
+							    {
+									
+							        if (incTrain && !trainModel)
+							        {
+							            // 1) Always open one "Trend" trade (with the trendDirection you computed)
+							             if (tradeParams.TradeType == TradeType.Trend)
+							            {
+							                // e.g. 'trendDirection' is direction with imbalance
+							                SimulateTrade(tradeParams, trendDirection, closePrice, "Trend");
+							            }
+							            else // TradeType.Regress
+							            {
+							                // e.g. 'regressDirection' is the opposite direction
+							                SimulateTrade(tradeParams, regressDirection, closePrice, "Regression");
+							            }
+							        }
+							        else
+							        {
+							            // Original logic: If you’re in a "Trend" mode => use trendDirection
+							            // If you’re in "Regression" mode => use regressDirection
+							            if ((modelToTrain == TradingMode.Trend && trainModel) 
+							                || (currentMode == TradingMode.Trend && incTrain))
+							            {
+							                // Trend trade
+							                SimulateTrade(tradeParams, trendDirection, closePrice, "Trend");
+							            }
+							            else
+							            {
+							                // Regression trade
+							                SimulateTrade(tradeParams, regressDirection, closePrice, "Regression");
+							            }
+							        }
+							    }
+							}
+						}
+						else if(calculationMode == ImbalanceMode.Diagonal){
+							
+							var activeTrades = tradeParamsList.Where(tp => tp.allowInTrade == true);
+							
+							bool moreThan;
+							bool lessThan;
+							
+							foreach (var tradeParams in activeTrades)
+							{
+								if (imbVolM1 >= tradeParams.ImbVolThreshold)
+								{
+								    tradeRatio = sellVolumeM1 > 0 ? buyVolume / sellVolumeM1 : buyVolume;
+									
+						
+									trendDirection   = "Long";
+									regressDirection = "Short";
+									
+								}
+								else if (imbVolP1 >= tradeParams.ImbVolThreshold )
+								{
+								    tradeRatio = buyVolumeP1 > 0 ? sellVolume / buyVolumeP1 : sellVolume;
+		
+									trendDirection   = "Short";
+									regressDirection = "Long";
+		
+									
+								}
+									
+							    if ((advDetectionM1 >= tradeParams.AdvDetectionThreshold 
+							        && imbVolM1 >= tradeParams.ImbVolThreshold 
+							        && tradeRatioM1 >= tradeParams.RatioThreshold) || 
+									(advDetectionP1 >= tradeParams.AdvDetectionThreshold 
+							        && imbVolP1 >= tradeParams.ImbVolThreshold 
+							        && tradeRatioP1 >= tradeParams.RatioThreshold))  
+							    {
+									
+							        if (incTrain && !trainModel)
+							        {
+							            // 1) Always open one "Trend" trade (with the trendDirection you computed)
+							             if (tradeParams.TradeType == TradeType.Trend)
+							            {
+							                // e.g. 'trendDirection' is direction with imbalance
+							                SimulateTrade(tradeParams, trendDirection, closePrice, "Trend");
+							            }
+							            else // TradeType.Regress
+							            {
+							                // e.g. 'regressDirection' is the opposite direction
+							                SimulateTrade(tradeParams, regressDirection, closePrice, "Regression");
+							            }
+							        }
+							        else
+							        {
+							            // Original logic: If you’re in a "Trend" mode => use trendDirection
+							            // If you’re in "Regression" mode => use regressDirection
+							            if ((modelToTrain == TradingMode.Trend && trainModel) 
+							                || (currentMode == TradingMode.Trend && incTrain))
+							            {
+							                // Trend trade
+							                SimulateTrade(tradeParams, trendDirection, closePrice, "Trend");
+							            }
+							            else
+							            {
+							                // Regression trade
+							                SimulateTrade(tradeParams, regressDirection, closePrice, "Regression");
+							            }
+							        }
+							    }
+							}
 						}
 					}
 					
@@ -739,76 +828,185 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		private void HandleEntryConditions()
 		{
-		    // If an ATM strategy is already open, do nothing.
-		    if (orderId.Length > 0 || atmStrategyId.Length > 0 || tradeTaken)
+		    // Simple checks to avoid multiple concurrent orders or no modes selected
+		    if (orderId.Length > 0 || atmStrategyId.Length > 0 || (!longMode && !shortMode) || tradeTaken)
 		        return;
-			
-			FractalLineSignal fractSignal = ProcessFractalLine();
 		
-		    // 1) Gather “ask” volumes below current price
-		    double totalAskBelow = 0;
-		    double totalBidBelow = 0;
-		    for (int i = 0; i < tickStacking; i++)
-		    {
-		        double checkPrice = price - i * TickSize;
-		        if (priceVolumeMap.TryGetValue(checkPrice, out volData))
-		        {
-		            totalAskBelow += volData.AskVolume;
-		            totalBidBelow += volData.BidVolume;
-		        }
-		    }
-		    
-		    // 2) Gather “bid” volumes above current price
-		    double totalAskAbove = 0;
-		    double totalBidAbove = 0;
-		    for (int i = 0; i < tickStacking; i++)
-		    {
-		        double checkPrice = price + i * TickSize;
-		        if (priceVolumeMap.TryGetValue(checkPrice, out volData))
-		        {
-		            totalAskAbove += volData.AskVolume;
-		            totalBidAbove += volData.BidVolume;
-		        }
-		    }
+		    // We'll use the current "price" from your code
+		    // e.g., maybe last trade price in OnMarketData, or close[0], etc.
+		    double currentPrice = price;
 		
-		    bool askSignal = false;
-		    bool bidSignal = false;
-		
-		    if (totalBidBelow > 0
-		        && (totalAskBelow / totalBidBelow > minRatio)
-		        && (totalAskBelow - totalBidBelow > minVolume)
-		        && (totalBidBelow > minDetection))
-		    {
-		        askSignal = true;
-		    }
-		
-		    if (totalAskAbove > 0
-		        && (totalBidAbove / totalAskAbove > minRatio)
-		        && (totalBidAbove - totalAskAbove > minVolume)
-		        && (totalAskAbove > minDetection))
-		    {
-		        bidSignal = true;
-		    }
-			
-		
-		    if (askSignal && longMode)
-		    {
+		    // Evaluate imbalances for LONG mode (below price) and SHORT mode (above price)
+		    bool askSignalLong, bidSignalLong;
+		    bool askSignalShort, bidSignalShort;
 
-		        if (currentMode == TradingMode.Trend && fractSignal == FractalLineSignal.Long)
-		            SubmitAtmStrategy(OrderAction.Buy);
-		        else if (currentMode == TradingMode.Regression && fractSignal == FractalLineSignal.Short)
-		            SubmitAtmStrategy(OrderAction.Sell);
-		    }
-		
-		    if (bidSignal && shortMode)
-		    {
+			// Now it accepts Dictionary<double, VolumeData>:
+			double FindClosestKey(Dictionary<double, VolumeData> dict, double targetPrice)
+			{
+			    return dict.Keys
+			               .OrderBy(key => Math.Abs(key - targetPrice))
+			               .FirstOrDefault();
+			};
+
+			double closestPrice = FindClosestKey(aggregatedVolumes, price);
+			double closestPBPrice = FindClosestKey(aggregatedPullbackVol, price);
+			
+			if(aggregatedVolumes.TryGetValue(closestPrice, out VolumeData segmentVol)){
+					  // ----- LONG MODE signals -----
 				
-		        if (currentMode == TradingMode.Trend && fractSignal == FractalLineSignal.Short)
-		            SubmitAtmStrategy(OrderAction.Sell);
-		        else if (currentMode == TradingMode.Regression && fractSignal == FractalLineSignal.Long)
-		            SubmitAtmStrategy(OrderAction.Buy);
-		    }
+				double buyVolume = segmentVol.AskVolume;
+				double buyVolumeP1 = aggregatedVolumes.ContainsKey(closestPrice + tickStacking * TickSize) ? aggregatedVolumes[closestPrice + tickStacking * TickSize].AskVolume : buyVolume;
+				double sellVolume = segmentVol.BidVolume;
+				double sellVolumeM1 = aggregatedVolumes.ContainsKey(closestPrice - tickStacking * TickSize) ? aggregatedVolumes[closestPrice - tickStacking * TickSize].BidVolume : sellVolume;
+				
+				double imbVolP1 = sellVolume - buyVolumeP1;
+				double advDetectionP1 = buyVolumeP1;
+				double tradeRatioP1 = sellVolume / buyVolumeP1;
+				
+				double imbVolM1 = buyVolume - sellVolumeM1;
+				double advDetectionM1 = sellVolumeM1;
+				double tradeRatioM1 = buyVolume / sellVolumeM1;
+				
+				double imbVol = Math.Abs(buyVolume - sellVolume);
+				double advDetection = Math.Min(buyVolume, sellVolume);
+				double tradeRatio = Math.Min(buyVolume,sellVolume) > 0 ? Math.Max(buyVolume, sellVolume) / Math.Min(buyVolume,sellVolume) : Math.Max(buyVolume, sellVolume);
+				bool longSignal = false;
+				bool sellSignal = false;
+				
+				if(calculationMode == ImbalanceMode.Horizontal){
+					if(imbVol > minVolume && advDetection > minDetection && tradeRatio > minRatio){
+						if(buyVolume > sellVolume){
+							longSignal = true;
+						}
+						if(sellVolume > buyVolume){
+							sellSignal = true;
+						}
+						
+						var csvList = aggregatedVolumes
+				            .OrderBy(kvp=>kvp.Key).Select(kvp => $"{kvp.Value.BidVolume},{kvp.Value.AskVolume}")
+				            .ToList();
+				
+				        // Join the CSV values into a single string
+				        string csvOutput = string.Join(",", csvList);
+				
+				        // Print the CSV output
+				        Print("Aggregated Volumes (CSV Style):");
+				        Print(csvOutput);
+					}
+				} else if(calculationMode == ImbalanceMode.Diagonal){
+					if( (imbVolM1 > minVolume && advDetectionM1 > minDetection && tradeRatioM1 > minRatio) || (imbVolP1 > minVolume && advDetectionP1 > minDetection && tradeRatioP1 > minRatio)){
+						
+						if(imbVolM1 > minVolume){
+							longSignal = true;
+						}
+						
+						if(imbVolP1 > minVolume){
+							sellSignal = true;
+						}
+						
+						 var csvList = aggregatedVolumes
+				            .OrderBy(kvp=>kvp.Key).Select(kvp => $"{kvp.Value.BidVolume},{kvp.Value.AskVolume}")
+				            .ToList();
+				
+				        // Join the CSV values into a single string
+				        string csvOutput = string.Join(",", csvList);
+				
+				        // Print the CSV output
+				        Print("Aggregated Volumes (CSV Style):");
+				        Print(csvOutput);
+					}
+				}
+			    if (longMode)
+			    {
+			        if (longSignal && currentMode == TradingMode.Trend)
+			            SubmitAtmStrategy(OrderAction.Buy);
+			        if (longSignal && currentMode == TradingMode.Regression)
+			            SubmitAtmStrategy(OrderAction.Sell);
+
+			    }
+			
+			    // ----- SHORT MODE signals -----
+			    if (shortMode)
+			    {
+			        if (sellSignal && currentMode == TradingMode.Trend)
+			            SubmitAtmStrategy(OrderAction.Sell);
+			        if (sellSignal && currentMode == TradingMode.Regression)
+			            SubmitAtmStrategy(OrderAction.Buy);
+
+			    };
+			}
+			
+			if(aggregatedPullbackVol.TryGetValue(closestPBPrice, out VolumeData PBVol)){
+					  // ----- LONG MODE signals -----
+				
+				double buyVolume = PBVol.AskVolume;
+				double buyVolumeP1 = aggregatedVolumes.ContainsKey(closestPBPrice + tickStacking * TickSize) ? aggregatedVolumes[closestPBPrice + tickStacking * TickSize].AskVolume : buyVolume;
+				double sellVolume = PBVol.BidVolume;
+				double sellVolumeM1 = aggregatedVolumes.ContainsKey(closestPBPrice - tickStacking * TickSize) ? aggregatedVolumes[closestPBPrice - tickStacking * TickSize].BidVolume : sellVolume;
+				
+				double imbVolP1 = sellVolume - buyVolumeP1;
+				double advDetectionP1 = buyVolumeP1;
+				double tradeRatioP1 = sellVolume / buyVolumeP1;
+				
+				double imbVolM1 = buyVolume - sellVolumeM1;
+				double advDetectionM1 = sellVolumeM1;
+				double tradeRatioM1 = buyVolume / sellVolumeM1;
+				
+				double imbVol = Math.Abs(buyVolume - sellVolume);
+				double advDetection = Math.Min(buyVolume, sellVolume);
+				double tradeRatio = Math.Min(buyVolume,sellVolume) > 0 ? Math.Max(buyVolume, sellVolume) / Math.Min(buyVolume,sellVolume) : Math.Max(buyVolume, sellVolume);
+				bool longSignal = false;
+				bool sellSignal = false;
+				
+				if((imbVol > minVolume && advDetection > minDetection && tradeRatio > minRatio) || (imbVolM1 > minVolume && advDetectionM1 > minDetection && tradeRatioM1 > minRatio) || (imbVolP1 > minVolume && advDetectionP1 > minDetection && tradeRatioP1 > minRatio)){
+					if(buyVolume > sellVolume){
+						longSignal = true;
+					}
+					if(sellVolume > buyVolume){
+						sellSignal = true;
+					}
+					
+					if(imbVolM1 > minVolume){
+						longSignal = true;
+					}
+					
+					if(imbVolP1 > minVolume){
+						sellSignal = true;
+					}
+					
+					 var csvList = aggregatedVolumes
+			            .OrderBy(kvp=>kvp.Key).Select(kvp => $"{kvp.Value.BidVolume},{kvp.Value.AskVolume}")
+			            .ToList();
+			
+			        // Join the CSV values into a single string
+			        string csvOutput = string.Join(",", csvList);
+			
+			        // Print the CSV output
+			        Print("Aggregated Volumes From PB Bar (CSV Style):");
+			        Print(csvOutput);
+				}
+			    if (longMode)
+			    {
+			        if (longSignal && currentMode == TradingMode.Trend)
+			            SubmitAtmStrategy(OrderAction.Buy);
+			        if (longSignal && currentMode == TradingMode.Regression)
+			            SubmitAtmStrategy(OrderAction.Sell);
+
+			    }
+			
+			    // ----- SHORT MODE signals -----
+			    if (shortMode)
+			    {
+			        if (sellSignal && currentMode == TradingMode.Trend)
+			            SubmitAtmStrategy(OrderAction.Sell);
+			        if (sellSignal && currentMode == TradingMode.Regression)
+			            SubmitAtmStrategy(OrderAction.Buy);
+
+			    };
+			}
+
 		}
+
 
 		private (bool askSignal, bool bidSignal) CheckConsecutiveChunks(
 		    double basePrice,
@@ -840,6 +1038,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		            }
 		        }
 		
+
 		        // Decide if this chunk is "ask" or "bid"
 		        bool chunkIsAsk = false;
 		        bool chunkIsBid = false;
@@ -848,7 +1047,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        if ((chunkBid > 0 &&
 		            (chunkAsk / chunkBid > minRatio) &&
 		            (chunkAsk - chunkBid > minVolume) &&
-		            (chunkBid > minDetection) ) || (chunkBid > minDetection && chunkAsk == 0))
+		            (chunkBid > minDetection) ))
 		        {
 		            chunkIsAsk = true;
 		        }
@@ -856,7 +1055,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        if ((chunkAsk > 0 &&
 		            (chunkBid / chunkAsk > minRatio) &&
 		            (chunkBid - chunkAsk > minVolume) &&
-		            (chunkAsk > minDetection) )|| (chunkAsk > minDetection && chunkBid == 0))
+		            (chunkAsk > minDetection) ))
 		        {
 		            chunkIsBid = true;
 		        }
@@ -904,261 +1103,204 @@ namespace NinjaTrader.NinjaScript.Strategies
 			resetButtons();
 			tradeTaken = true;
 		}
-		
-		private FractalLineSignal ProcessFractalLine(){
-			double upperFractal = 0;
-			double lowerFractal = 0;
-						// Let's find the first non-zero fractal in the recent past
-		    // We'll go up to 30 bars back (for example) to see if there's a non-zero.
-		    for (int i = 1; i <= Math.Min(CurrentBar, 10); i++)
-		    {
-		        // If myFractal.Upper[i] is not 0, we found an upper fractal i bars ago
-		        if (myFractal.Upper[i] != 0)
-		        {
-		            upperFractal = myFractal.Upper[i];
-		            //Print($"Found an upper fractal {i} bars ago at value {upperFractal}.");
-		            break;  // Stop searching once found
-		        }
-		    }
-		
-		    // Similarly for the lower fractal
-		    for (int i = 1; i <= Math.Min(CurrentBar, 10); i++)
-		    {
-		        if (myFractal.Lower[i] != 0)
-		        {
-		            lowerFractal = myFractal.Lower[i];
-		            //Print($"Found a lower fractal {i} bars ago at value {lowerFractal}.");
-		            break;
-		        }
-		    }
-			
-		   if (currentMode == TradingMode.Trend)
-		    {
-		        if (price < lowerFractal)
-		            return FractalLineSignal.Short;
-		
-		        if (price > upperFractal)
-		            return FractalLineSignal.Long;
-		
-		        if (price > lowerFractal && price < upperFractal)
-		            return FractalLineSignal.Both;
-		    }
-		    else if (currentMode == TradingMode.Regression)
-		    {
-		        if (price < lowerFractal)
-		            return FractalLineSignal.Long;
-		
-		        if (price > upperFractal)
-		            return FractalLineSignal.Short;
-		
-		        if (price > lowerFractal && price < upperFractal)
-		            return FractalLineSignal.Both;
-		    }
-			
-			return FractalLineSignal.Both;
-		}
-		
+
+		int lastSampleBar = 0;
 		private void InitializeTradeParams()
 		{
+			if(lastSampleBar == 0){
+				lastSampleBar = CurrentBar;
+			}
+			
+			if(CurrentBar == lastSampleBar)
+				return;
+			
+			if(CurrentBar > lastSampleBar)
+				lastSampleBar = CurrentBar;
+			
 		    DateTime tradeWindowEndTime = currentTime.AddSeconds(tradesWindowMinutes);
-			double effectiveKey = 0;
-			double effectiveRegressKey = 0;
-			
-			if((modelToTrain == TradingMode.Regression && State==State.Historical) ||(incTrain && State == State.Realtime)){
-				foreach (var kvp in aggregatedVolumes)
-				{
-				    double key = kvp.Key; // Price level (key)
-				    VolumeData segmentVol = kvp.Value;
-				
-				    // If the candle is an up candle, track the lowest key
-				    if (Close[0] > Open[0])
-				    {
-				        if (effectiveRegressKey == 0 || key < effectiveRegressKey)
-				        {
-				            effectiveRegressKey = key; // Assign the lowest key for an up candle
-				        }
-				    }
-				    // If the candle is a down candle, track the highest key
-				    else if (Close[0] < Open[0])
-				    {
-				        if (effectiveRegressKey == 0 || key > effectiveRegressKey)
-				        {
-				            effectiveRegressKey = key; // Assign the highest key for a down candle
-				        }
-				    }
-				}
-			}
-			
-			
-			if((modelToTrain == TradingMode.Trend  && State==State.Historical) || (incTrain && State == State.Realtime)){
-				foreach (var kvp in aggregatedVolumes)
-				{
-				    double key = kvp.Key; // Price level (key)
-				    VolumeData segmentVol = kvp.Value;
-				
-				    // If the candle is an up candle, track the lowest key
-				    if (Close[0] > Open[0])
-				    {
-				        if ((effectiveKey == 0 || key < effectiveKey) && kvp.Value.AskVolume > kvp.Value.BidVolume)
-				        {
-				            effectiveKey = key; // Assign the lowest key for an up candle
-				        }
-				    }
-				    // If the candle is a down candle, track the highest key
-				    else if (Close[0] < Open[0])
-				    {
-				        if ((effectiveKey == 0 || key > effectiveKey) && kvp.Value.AskVolume < kvp.Value.BidVolume)
-				        {
-				            effectiveKey = key; // Assign the highest key for a down candle
-				        }
-				    }
-				}
-			}
+		
 			
 			// At this point, effectiveKey holds the lowest key for an up candle or the highest key for a down candle
-			if (aggregatedVolumes.TryGetValue(effectiveKey, out VolumeData selectedKey))
+			foreach(var kvp in aggregatedVolumes)
 			{
-	            double price       = effectiveKey;
-	            double buyVolume   = selectedKey.AskVolume;
-	            double sellVolume  = selectedKey.BidVolume;
-	            double tradeRatio  = 0;
+	            double price       = kvp.Key;
+	            double buyVolume   = kvp.Value.AskVolume;
+	            double sellVolume  = kvp.Value.BidVolume;
+				double buyVolumeP1 = aggregatedVolumes.ContainsKey(kvp.Key + tickStacking * TickSize) ? aggregatedVolumes[kvp.Key + tickStacking * TickSize].AskVolume : buyVolume;
+				double sellVolumeM1 = aggregatedVolumes.ContainsKey(kvp.Key - tickStacking * TickSize) ? aggregatedVolumes[kvp.Key - tickStacking * TickSize].BidVolume : sellVolume;
+				
+				double imbVolP1 = sellVolume - buyVolumeP1;
+				double advDetectionP1 = buyVolumeP1;
+				double tradeRatioP1 = sellVolume / buyVolumeP1;
+				
+				double imbVolM1 = buyVolume - sellVolumeM1;
+				double advDetectionM1 = sellVolumeM1;
+				double tradeRatioM1 = buyVolume / sellVolumeM1;
+				
+				double imbVol = Math.Abs(buyVolume - sellVolume);
+				double advDetection = Math.Min(buyVolume, sellVolume);
+				double tradeRatio = Math.Min(buyVolume,sellVolume) > 0 ? Math.Max(buyVolume, sellVolume) / Math.Min(buyVolume,sellVolume) : Math.Max(buyVolume, sellVolume);
 
+				if(calculationMode == ImbalanceMode.Horizontal){
 	            // Determine direction logic (like before)
-	            if (buyVolume > sellVolume)
-	            {
-	                tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
-	            }
-	            else if (sellVolume > buyVolume)
-	            {
-	                tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
-	       
-	            }
-	
-	            // Check thresholds
-	            if (Math.Abs(buyVolume- sellVolume) > 0)
-	            {
-	                // If incTrain is ON (and optionally trainModel is OFF),
-	                // create both a Trend AND a Regression trade parameter
-	                if (incTrain && !trainModel && State == State.Realtime)
-	                {
-	                    // 1) Trend trade parameters
-	                    NewTradeParameters trendParams = new NewTradeParameters(
-	                        Math.Abs(buyVolume - sellVolume),
-	                        Math.Min(buyVolume, sellVolume),
-	                        tradeRatio,
-	                        tradeWindowEndTime,
-	                        TradeType.Trend
-	                    );
-	                    tradeParamsList.Add(trendParams);
+		            if (buyVolume > sellVolume)
+		            {
+		                tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
+		            }
+		            else if (sellVolume > buyVolume)
+		            {
+		                tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
+		       
+		            }
+					
+						 // Check thresholds
+		            if (Math.Abs(buyVolume- sellVolume) > 0 && Math.Min(buyVolume, sellVolume) > 2)
+		            {
+		                // If incTrain is ON (and optionally trainModel is OFF),
+		                // create both a Trend AND a Regression trade parameter
+		                if (incTrain && !trainModel && State == State.Realtime)
+		                {
+		                    // 1) Trend trade parameters
+		                    NewTradeParameters trendParams = new NewTradeParameters(
+		                        Math.Abs(buyVolume - sellVolume),
+		                        Math.Min(buyVolume, sellVolume),
+		                        tradeRatio,
+		                        tradeWindowEndTime,
+		                        TradeType.Trend
+		                    );
+		                    tradeParamsList.Add(trendParams);
+							
+							 NewTradeParameters regressParams = new NewTradeParameters(
+		                        Math.Abs(buyVolume - sellVolume),
+		                        Math.Min(buyVolume, sellVolume),
+		                        tradeRatio,
+		                        tradeWindowEndTime,
+		                        TradeType.Regress
+		                    );
+		                    tradeParamsList.Add(regressParams);
+							
+		                }
+		                else
+		                {
+		                    // Existing logic: pick a single trade type (Trend or Regress)
+		                    TradeType tradeType = TradeType.Trend;
+		                    
+		                    if (currentMode == TradingMode.Trend)
+		                        tradeType = TradeType.Trend;
+							 if (currentMode == TradingMode.Regression)
+		                        tradeType = TradeType.Regress;
+		
+		                    NewTradeParameters tradeParams = new NewTradeParameters(
+		                        Math.Abs(buyVolume - sellVolume),
+		                        Math.Min(buyVolume, sellVolume),
+		                        tradeRatio,
+		                        tradeWindowEndTime,
+		                        tradeType
+		                    );
+							
+														// Example: only add if there's no *active* tradeParams with the same thresholds
+							bool alreadyExists = tradeParamsList.Any(tp => 
+							    tp.IsActive 
+							    && tp.ImbVolThreshold == tradeParams.ImbVolThreshold
+							    && tp.AdvDetectionThreshold == tradeParams.AdvDetectionThreshold
+							    && tp.RatioThreshold == tradeParams.RatioThreshold
+							 
+							);
+							
+							if (!alreadyExists)
+							{
+							    tradeParamsList.Add(tradeParams);
+							}
+		                }
+					}
+				} else if(calculationMode == ImbalanceMode.Diagonal){
+					if (buyVolume > sellVolumeM1)
+					{
+						tradeRatio = sellVolumeM1 > 0 ? buyVolume / sellVolumeM1 : buyVolume;
+					
+					}
+					else if (sellVolume > buyVolumeP1)
+					{
+					 	tradeRatio = buyVolumeP1 > 0 ? sellVolume / buyVolumeP1 : sellVolume;
 						
-						Print(tradeWindowEndTime);
-						Print(currentTime);
-	                }
-	                else
-	                {
-	                    // Existing logic: pick a single trade type (Trend or Regress)
-	                    TradeType tradeType = TradeType.Trend;
-	                    
-	                    if (currentMode == TradingMode.Trend)
-	                        tradeType = TradeType.Trend;
-	
-	                    NewTradeParameters tradeParams = new NewTradeParameters(
-	                        Math.Abs(buyVolume - sellVolume),
-	                        Math.Min(buyVolume, sellVolume),
-	                        tradeRatio,
-	                        tradeWindowEndTime,
-	                        tradeType
-	                    );
+					}
+					
+					 // Check thresholds
+		            if ((imbVolP1 > 0 && buyVolumeP1 > 2) || (imbVolM1 > 0 && sellVolumeM1 > 2))
+		            {
+						double askVol = 0;
+						double bidVol = 0;
 						
-													// Example: only add if there's no *active* tradeParams with the same thresholds
-						bool alreadyExists = tradeParamsList.Any(tp => 
-						    tp.IsActive 
-						    && tp.ImbVolThreshold == tradeParams.ImbVolThreshold
-						    && tp.AdvDetectionThreshold == tradeParams.AdvDetectionThreshold
-						    && tp.RatioThreshold == tradeParams.RatioThreshold
-						 
-						);
-						
-						if (!alreadyExists)
-						{
-						    tradeParamsList.Add(tradeParams);
+						if(imbVolP1 > 0 && buyVolumeP1 > 2 ){
+							askVol = buyVolumeP1;
+							bidVol = sellVolume;
 						}
-	                }
-	            }
-    		}
-			
-			if (aggregatedVolumes.TryGetValue(effectiveRegressKey, out VolumeData selectedRegressKey))
-			{
-	            double price       = effectiveRegressKey;
-	            double buyVolume   = selectedRegressKey.AskVolume;
-	            double sellVolume  = selectedRegressKey.BidVolume;
-	            double tradeRatio  = 0;
-
-	            // Determine direction logic (like before)
-	            if (buyVolume > sellVolume)
-	            {
-	                tradeRatio = sellVolume > 0 ? buyVolume / sellVolume : buyVolume;
-	            }
-	            else if (sellVolume > buyVolume)
-	            {
-	                tradeRatio = buyVolume > 0 ? sellVolume / buyVolume : sellVolume;
-	       
-	            }
-	
-	            // Check thresholds
-	            if (Math.Abs(buyVolume- sellVolume) > 0)
-	            {
-	                // If incTrain is ON (and optionally trainModel is OFF),
-	                // create both a Trend AND a Regression trade parameter
-	                if (incTrain && !trainModel && State == State.Realtime)
-	                {
-	
-	                    // 2) Regression trade parameters
-	                    NewTradeParameters regressParams = new NewTradeParameters(
-	                        Math.Abs(buyVolume - sellVolume),
-	                        Math.Min(buyVolume, sellVolume),
-	                        tradeRatio,
-	                        tradeWindowEndTime,
-	                        TradeType.Regress
-	                    );
-	                    tradeParamsList.Add(regressParams);
 						
-						
-	                }
-	                else
-	                {
-	                    // Existing logic: pick a single trade type (Trend or Regress)
-	                    TradeType tradeType = TradeType.Regress;
-
-	                    if (currentMode == TradingMode.Regression)
-	                        tradeType = TradeType.Regress;
-	
-	                    NewTradeParameters tradeParams = new NewTradeParameters(
-	                        Math.Abs(buyVolume - sellVolume),
-	                        Math.Min(buyVolume, sellVolume),
-	                        tradeRatio,
-	                        tradeWindowEndTime,
-	                        tradeType
-	                    );
-						
-													// Example: only add if there's no *active* tradeParams with the same thresholds
-						bool alreadyExists = tradeParamsList.Any(tp => 
-						    tp.IsActive 
-						    && tp.ImbVolThreshold == tradeParams.ImbVolThreshold
-						    && tp.AdvDetectionThreshold == tradeParams.AdvDetectionThreshold
-						    && tp.RatioThreshold == tradeParams.RatioThreshold
-						 
-						);
-						
-						if (!alreadyExists)
-						{
-						    tradeParamsList.Add(tradeParams);
+						if(imbVolM1 > 0 && sellVolumeM1 > 2 ){
+							askVol = buyVolume;
+							bidVol = sellVolumeM1;
 						}
-	                }
-	            }
-    		}
+		                // If incTrain is ON (and optionally trainModel is OFF),
+		                // create both a Trend AND a Regression trade parameter
+		                if (incTrain && !trainModel && State == State.Realtime)
+		                {
+		                    // 1) Trend trade parameters
+		                    NewTradeParameters trendParams = new NewTradeParameters(
+		                        Math.Abs(askVol - bidVol),
+		                        Math.Min(askVol, bidVol),
+		                        tradeRatio,
+		                        tradeWindowEndTime,
+		                        TradeType.Trend
+		                    );
+		                    tradeParamsList.Add(trendParams);
+							
+							 NewTradeParameters regressParams = new NewTradeParameters(
+		                         Math.Abs(askVol - bidVol),
+		                        Math.Min(askVol, bidVol),
+		                        tradeRatio,
+		                        tradeWindowEndTime,
+		                        TradeType.Regress
+		                    );
+		                    tradeParamsList.Add(regressParams);
+							
+		                }
+		                else
+		                {
+		                    // Existing logic: pick a single trade type (Trend or Regress)
+		                    TradeType tradeType = TradeType.Trend;
+		                    
+		                    if (currentMode == TradingMode.Trend)
+		                        tradeType = TradeType.Trend;
+							 if (currentMode == TradingMode.Regression)
+		                        tradeType = TradeType.Regress;
+		
+		                    NewTradeParameters tradeParams = new NewTradeParameters(
+		                        Math.Abs(askVol - bidVol),
+		                        Math.Min(askVol, bidVol),
+		                        tradeRatio,
+		                        tradeWindowEndTime,
+		                        tradeType
+		                    );
+							
+														// Example: only add if there's no *active* tradeParams with the same thresholds
+							bool alreadyExists = tradeParamsList.Any(tp => 
+							    tp.IsActive 
+							    && tp.ImbVolThreshold == tradeParams.ImbVolThreshold
+							    && tp.AdvDetectionThreshold == tradeParams.AdvDetectionThreshold
+							    && tp.RatioThreshold == tradeParams.RatioThreshold
+							 
+							);
+							
+							if (!alreadyExists)
+							{
+							    tradeParamsList.Add(tradeParams);
+							}
+		                }
+					}
+		
+	    		}
+			}
 			
-
 		}
 
 		private Dictionary<double, VolumeData> AggregateVolumesIntoGroups(
@@ -1168,7 +1310,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		{
 		    Dictionary<double, VolumeData> aggregatedVolumes = new Dictionary<double, VolumeData>();
 		
-		    int ticksPerSegment = 4;            // Number of ticks in each segment
+		    int ticksPerSegment = tickStacking;            // Number of ticks in each segment
 		    double tickSize = TickSize;         // Tick size of the instrument
 		    double segmentSize = ticksPerSegment * tickSize; // Size of each segment in price terms
 		    
@@ -1237,27 +1379,92 @@ namespace NinjaTrader.NinjaScript.Strategies
 		private void SimulateTrade(NewTradeParameters tradeParams, string direction, double price, string tradingMode)
 		{
 		    double entryPrice = price;
-		    
+		
+		    // Create a new simulated trade instance
 		    NewSimTrade newTrade = new NewSimTrade(
 		        price,
-				direction,
-				tradeParams
+		        direction,
+		        tradeParams
 		    );
-			
-			if(tradeParams.TradingMode == "" && tradeParams.BolDif == 0 && tradeParams.VolumeSpeed == 0 && tradeParams.MADif == 0 && tradeParams.StdDev == 0 && tradeParams.TOD == 0){
-				tradeParams.TradingMode = tradingMode;
-				tradeParams.BolDif = PATIMachineLearningInputsV2().BollingerDiff[0];
-				tradeParams.VolumeSpeed = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0];
-				tradeParams.MADif = PATIMachineLearningInputsV2().MovingAvgDiff[0];
-				tradeParams.StdDev = PATIMachineLearningInputsV2().StdDevBB[0];
-				tradeParams.TOD = PATIMachineLearningInputsV2().TimeOfDay[0];
-			}
 		
-		   // tradeParams.Trades.Add(newTrade);
+		    // Initialize trade parameters if not already set
+		    if (string.IsNullOrEmpty(tradeParams.TradingMode) &&
+		        tradeParams.BolDif == 0 &&
+		        tradeParams.VolumeSpeed == 0 &&
+		        tradeParams.MADif == 0 &&
+		        tradeParams.StdDev == 0 &&
+		        tradeParams.TOD == 0)
+		    {
+		        tradeParams.TradingMode = tradingMode;
+		        tradeParams.BolDif = PATIMachineLearningInputsV2().BollingerDiff[0];
+		        tradeParams.VolumeSpeed = PATIMachineLearningInputsV2().VolumeSpeedPerSecond[0];
+		        tradeParams.MADif = PATIMachineLearningInputsV2().MovingAvgDiff[0];
+		        tradeParams.StdDev = PATIMachineLearningInputsV2().StdDevBB[0];
+		        tradeParams.TOD = PATIMachineLearningInputsV2().TimeOfDay[0];
+		    }
+		
+		    bool bolDifIncremented = false;
+			bool volumeSpeedIncremented = false;
+			bool maDifIncremented = false;
+			bool stdDevIncremented = false;
+			bool todIncremented = false; // If needed
+			
+			foreach (var par in tradeParamsList)
+			{
+			    // Check and increment BolDif
+			    if (!bolDifIncremented && par.BolDif == tradeParams.BolDif)
+			    {
+			        tradeParams.BolDif += 0.01;
+			        bolDifIncremented = true;
+			        //Print($"BolDif matched. Incremented BolDif to {tradeParams.BolDif}");
+			    }
+			
+			    // Check and increment VolumeSpeed
+			    if (!volumeSpeedIncremented && par.VolumeSpeed == tradeParams.VolumeSpeed)
+			    {
+			        tradeParams.VolumeSpeed += 0.01;
+			        volumeSpeedIncremented = true;
+			        //Print($"VolumeSpeed matched. Incremented VolumeSpeed to {tradeParams.VolumeSpeed}");
+			    }
+			
+			    // Check and increment MADif
+			    if (!maDifIncremented && par.MADif == tradeParams.MADif)
+			    {
+			        tradeParams.MADif += 0.01;
+			        maDifIncremented = true;
+			        //Print($"MADif matched. Incremented MADif to {tradeParams.MADif}");
+			    }
+			
+			    // Check and increment StdDev
+			    if (!stdDevIncremented && par.StdDev == tradeParams.StdDev)
+			    {
+			        tradeParams.StdDev += 0.01;
+			        stdDevIncremented = true;
+			        //Print($"StdDev matched. Incremented StdDev to {tradeParams.StdDev}");
+			    }
+			
+			    // Check and increment TOD (if applicable)
+			    
+			    if (!todIncremented && par.TOD == tradeParams.TOD)
+			    {
+			        tradeParams.TOD += 0.01;
+			        todIncremented = true;
+			        //Print($"TOD matched. Incremented TOD to {tradeParams.TOD}");
+			    }
+			    
+			
+			    // Break early if all increments are done
+			    if (bolDifIncremented && volumeSpeedIncremented && maDifIncremented && stdDevIncremented /* && todIncremented */)
+			    {
+			        break;
+			    }
+			}
 		    tradeParams.allowInTrade = false;
 		    simTrades.Add(newTrade);
+		
+		    // [Optional] Print the trade details for verification
+		
 		}
-
 		private void UpdateSimTrades(double target, double stopLoss, double price)
 		{
 		    foreach (NewSimTrade trade in simTrades)
@@ -1334,7 +1541,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		
 		    // Now decide when to actually write them to CSV
 		    // For example, if we have at least 500 trades in historical or any new trades in real-time
-		    if (trainModel && completedTradeParamsBuffer.Count >= 500 && State == State.Historical)
+		    if (trainModel && State == State.Historical)
 		    {
 		        WriteTradesToCsv(completedTradeParamsBuffer);
 		        completedTradeParamsBuffer.Clear(); // Clear once written
@@ -1423,7 +1630,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		    {
 		        string firstLine = File.ReadLines(filePath).FirstOrDefault();
 		        headerExists = firstLine != null 
-		                       && firstLine.StartsWith("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,MADif,BolDif,StdDev,TOD");
+		                       && firstLine.StartsWith("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,MADif,BolDif,StdDev,TOD,MetWinRate");
 		    }
 		
 		    using (StreamWriter writer = new StreamWriter(filePath, append: true))
@@ -1431,14 +1638,14 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        // If no header yet, write it once
 		        if (!headerExists)
 		        {
-		            writer.WriteLine("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,MADif,BolDif,StdDev,TOD");
+		            writer.WriteLine("WinRate,ImbVol,ImbRatio,AdversaryDetection,VolumeSpeed,MADif,BolDif,StdDev,TOD,MetWinRate");
 		            headerExists = true;
 		        }
 
 		        // Build CSV lines for each completed trade in each TradeParameters
 		        StringBuilder sb = new StringBuilder();
 				
-				List<NewTradeParameters> moreThan0Trades = tradeParamsList.Where(tp => tp.TradeCount > 0).ToList();
+				List<NewTradeParameters> moreThan0Trades = tradeParamsList.OrderBy(tp=> tp.TOD).Where(tp => tp.TradeCount > 0).ToList();
 		        foreach (var tradeParams in moreThan0Trades)
 		        {
 
@@ -1452,7 +1659,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		                    Math.Round(tradeParams.BolDif, 2),
 		                    Math.Round(tradeParams.StdDev, 2),
 		                    Math.Round(tradeParams.TOD, 2),
-							tradeParams.TradeCount
+							tradeParams.WinRate > targetWinRate ? 1 : 0
 		                );
 		            
 	 
@@ -1473,6 +1680,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 				BolDif = PATIMachineLearningInputsV2().BollingerDiff[0],
 				StdDev = PATIMachineLearningInputsV2().StdDevBB[0],
 				TOD = PATIMachineLearningInputsV2().TimeOfDay[0],
+				MetWinRate = 1,
 				CurrentModel = (currentMode == TradingMode.Regression) ? "Regression" : "Trend"
 			};
 			
@@ -1514,11 +1722,15 @@ namespace NinjaTrader.NinjaScript.Strategies
 		            minRatio = newRatio;
 		            minDetection = newDetectionValue;
 		
-					if(minVolume < 0)
-						minVolume = Math.Abs(minVolume);
+					if(minVolume < 15)
+						minVolume = 15;
 					
 					if(minDetection < 0)
 						minDetection = Math.Abs(newDetectionValue);
+					
+					if(minRatio < 1.5){
+						minRatio = 1.5;
+					}
 					
 					 Print($"MinVol: {minVolume}, Ratio: {minRatio}, AdvDet: {minDetection}");
 					
@@ -1570,6 +1782,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 		[NinjaScriptProperty]
 		[Display(Name="Number of imbalances to classify a trade", Order=6, GroupName="Imbalances")]
 		public int imbalancesToTrade { get; set; }
+		
+		[NinjaScriptProperty]
+		[Display(Name="Way to calculate Imbalances", Order=7, GroupName="Imbalances")]
+		public ImbalanceMode calculationMode { get; set; }
+		
 		
 		[NinjaScriptProperty]
 		[Display( Name = "SL for ML", GroupName = "Machine Learning Targets", Order = 0)]

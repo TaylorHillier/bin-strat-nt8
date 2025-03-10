@@ -57,44 +57,75 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 		}
        
-       bool wasAbove = false;
-bool wasBelow = false;
-       
-protected override void OnBarUpdate()
-{
-    // Get the current FMA value
-    double fmaValue = TaylorFMA(MovingAverageType.TMA, 8, 0, 2)[0];
-    
-    // Check for long entry conditions
-    if (wasBelow && IsRising(TaylorFMA(MovingAverageType.TMA, 8, 0, 2)) && Close[0] > fmaValue) {
-        EnterLong("Long");
-        Draw.ArrowUp(this, $"upArrow{CurrentBar}", false, 0, Low[0] - 1, Brushes.Green);
-        SetProfitTarget(CalculationMode.Ticks, (Close[0] - Low[0]) / TickSize);
-        SetStopLoss(CalculationMode.Ticks, (Close[0] - Low[0]) / TickSize);
-        Print("Long PT/SL Ticks: " + ((Close[0] - Low[0]) / TickSize));
-    }
-    
-    // Check for short entry conditions
-    if (wasAbove && IsFalling(TaylorFMA(MovingAverageType.TMA, 8, 0, 2)) && Close[0] < fmaValue) {
-        EnterShort("Short");
-        Draw.ArrowDown(this, $"downArrow{CurrentBar}", false, 0, High[0] + 1, Brushes.Red);
-        SetProfitTarget(CalculationMode.Ticks, (High[0] - Close[0]) / TickSize);
-        SetStopLoss(CalculationMode.Ticks, (High[0] - Close[0]) / TickSize);
-        Print("Short PT/SL Ticks: " + ((High[0] - Close[0]) / TickSize));
-    }
-    
-    // Update the state variables AFTER trade logic to prepare for next bar
-    if (Close[0] > fmaValue) {
-        wasAbove = true;
-        wasBelow = false;
-    } else if (Close[0] < fmaValue) {
-        wasAbove = false;
-        wasBelow = true;
-    } else {
-        // Price exactly equals FMA (rare but possible)
-        wasAbove = false;
-        wasBelow = false;
-    }
-}
+      	bool wasAbove = false;
+		bool wasBelow = false;
+		
+		int belowBar = -1;
+		int aboveBar = -1;
+		protected override void OnBarUpdate()
+		{
+			if(CurrentBar < 2)
+				return;
+			
+			double FMA =  TaylorFMA(MovingAverageType.EMA, 8,0,0)[0];
+			double ATRvalue = ATR(14)[0];
+			RSI RSIplot = RSI(FibFisher(17,0,0), 5,2);
+			double upperRSI = 80;
+			double lowerRSI = 20;
+			double RSIsmooth = RSIplot.Avg[0];
+	
+			if( Low[0] < FMA - (1.5 * ATRvalue)){
+				wasBelow = true;
+				belowBar = CurrentBar;
+			}
+			
+			if(High[0] > FMA + (1.5 * ATRvalue)){
+				wasAbove = true;
+				aboveBar = CurrentBar;
+			}
+			
+			if(wasBelow && CurrentBar >= belowBar + 5){
+				wasBelow = false;
+			}
+			
+			if(wasAbove && CurrentBar >= aboveBar + 5){
+				wasAbove = false;
+			}
+			
+					
+			if(wasBelow && CrossAbove(RSIplot, lowerRSI, 1) && RSIplot[0] > RSIplot[1]){
+				   //EnterLong("Long");
+		        Draw.ArrowUp(this, $"upArrow{CurrentBar}", false, 0, Low[0] - 1, Brushes.Green);
+//		        SetProfitTarget(CalculationMode.Ticks, 6 * (Close[0] - Low[0]) / TickSize);
+//		        SetStopLoss(CalculationMode.Ticks, 2 * (Close[0] - Low[0]) / TickSize);
+		        //Print("Long PT/SL Ticks: " + ((Close[0] - Low[0]) / TickSize));
+			}
+			
+			if(wasAbove && CrossBelow(RSIplot, upperRSI, 1) && RSIplot[0] < RSIplot[1]){
+				   //EnterShort("Short");
+		        Draw.ArrowDown(this, $"downArrow{CurrentBar}", false, 0, High[0] + 1, Brushes.Red);
+//		        SetProfitTarget(CalculationMode.Ticks, 6 * (High[0] - Close[0]) / TickSize);
+//		        SetStopLoss(CalculationMode.Ticks, 2* (High[0] - Close[0]) / TickSize);
+		       // Print("Short PT/SL Ticks: " + ((High[0] - Close[0]) / TickSize));
+			}
+			
+			if(Close[0] > FMA  && RSIplot[0]> RSIsmooth  && CrossAbove(RSIplot, lowerRSI, 1) && RSIplot[0] > RSIplot[1]){
+				   //EnterLong("Long");
+		        Draw.ArrowUp(this, $"upArrow{CurrentBar}", false, 0, Low[0] - 1, Brushes.Turquoise);
+//		        SetProfitTarget(CalculationMode.Ticks, 6 * (Close[0] - Low[0]) / TickSize);
+//		        SetStopLoss(CalculationMode.Ticks, 2 * (Close[0] - Low[0]) / TickSize);
+		       // Print("Long PT/SL Ticks: " + ((Close[0] - Low[0]) / TickSize));
+			}
+			
+			if(Close[0] < FMA  && RSIplot[0] < RSIsmooth  && CrossBelow(RSIplot, upperRSI, 1) && RSIplot[0] < RSIplot[1]){
+				   //EnterShort("Short");
+		        Draw.ArrowDown(this, $"downArrow{CurrentBar}", false, 0, High[0] + 1, Brushes.Orange);
+//		        SetProfitTarget(CalculationMode.Ticks, 6 * (High[0] - Close[0]) / TickSize);
+//		        SetStopLoss(CalculationMode.Ticks, 2* (High[0] - Close[0]) / TickSize);
+		        //Print("Short PT/SL Ticks: " + ((High[0] - Close[0]) / TickSize));
+			}
+
+			
+		}
 	}
 }

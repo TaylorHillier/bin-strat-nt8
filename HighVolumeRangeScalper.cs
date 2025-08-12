@@ -25,18 +25,30 @@ using NinjaTrader.NinjaScript.DrawingTools;
 //This namespace holds Strategies in this folder and is required. Do not change it. 
 namespace NinjaTrader.NinjaScript.Strategies
 {
-	public class HMAFMACross : Strategy
+	public class HighVolumeRangeScalper : Strategy
 	{
+//		This strategy identifies the high volume candles 
+//		within the specified lookback period, 
+//		draws a horizontal range using that candle’s 
+//		high and low, and trades based on the selected mode: 
+//		Regression (fade the breakout, expecting price to return inside the range) or 
+//		Trend (trade in the breakout direction). The range persists until invalidated 
+//		by a breakout in either direction, after which a new high-volume 
+//		candle is detected and a new range is drawn. Entry, stop-loss, 
+//		and target behavior adapt to the chosen mode.
+		
+	
+		
 		protected override void OnStateChange()
 		{
 			if (State == State.SetDefaults)
 			{
 				Description									= @"Enter the description for your new custom Strategy here.";
-				Name										= "HMAFMACross";
+				Name										= "HighVolumeRangeScalper";
 				Calculate									= Calculate.OnBarClose;
 				EntriesPerDirection							= 1;
 				EntryHandling								= EntryHandling.AllEntries;
-				IsExitOnSessionCloseStrategy				= false;
+				IsExitOnSessionCloseStrategy				= true;
 				ExitOnSessionCloseSeconds					= 30;
 				IsFillLimitOnTouch							= false;
 				MaximumBarsLookBack							= MaximumBarsLookBack.TwoHundredFiftySix;
@@ -57,95 +69,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 			}
 		}
 
-		double high = 0;
-				double low  = 0;
-		bool wasAbove10 = true;
-			bool wasBelow10 = true;
 		protected override void OnBarUpdate()
 		{
-			bool isAbove10 = Close[0] - TaylorFMA(MovingAverageType.EMA, 22, 0, 0)[0] > 30;
-			bool isBelow10 = Close[0] - TaylorFMA(MovingAverageType.EMA, 22, 0, 0)[0] < -30;
-		
-			
-			bool drawdown = false;
-			
-						
-			
-			if(Position.MarketPosition == MarketPosition.Flat){
-				high = 0;
-				low  = 0;
-			}
-			
-			if(Position.MarketPosition == MarketPosition.Long){
-				if(high == 0)
-					high = Close[0];
-				
-				if(low == 0){
-					low = Close[0];
-				}
-				if(Close[0] > high){
-					high = Close[0];
-					low = high;
-				}
-				
-				if(Close[0] < low)
-					low = Close[0];
-				
-				if(high - low > 60)
-					drawdown = true;
-			}
-			
-			if(Position.MarketPosition == MarketPosition.Short){
-				if(high == 0)
-					high = Close[0];
-				
-				if(low == 0){
-					low = Close[0];
-				}
-				if(Close[0] < low){
-					low = Close[0];
-					high = low;
-				}
-				
-				if(Close[0] > high)
-					high = Close[0];
-				
-				if(high - low > 50)
-					drawdown = true;
-			}
-			
-			if(isAbove10 && wasBelow10){
-				EnterLong("long");
-				wasAbove10 = true;
-				wasBelow10 = false;
-			} else if(isBelow10 && wasAbove10){
-				EnterShort("short");
-				wasBelow10 = true;
-				wasAbove10 = false;
-			}
-			
-			if(wasAbove10 && Close[0] - TaylorFMA(MovingAverageType.EMA, 22, 0, 0)[0] < 30)
-				wasBelow10 = true;
-			
-			if(wasBelow10 && Close[0] - TaylorFMA(MovingAverageType.EMA, 22, 0, 0)[0] > -30)
-				wasAbove10 = true;
-				
-		
-			
-			if(Position.MarketPosition == MarketPosition.Long && drawdown){
-				ExitLong("long");
-				high = 0;
-				low = 0;
-			}
-			
-			if(Position.MarketPosition == MarketPosition.Short && drawdown){
-				ExitShort("short");
-				high = 0;
-				low = 0;
-			}
+			//Add your custom strategy logic here.
 		}
 	}
 }
-
-
-

@@ -209,7 +209,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 		        prevAggSellVol = curAggSellVol;
 		
 		        // Build features from JUST-CLOSED bar [1]
-		        var fv = BuildFeatureVectorForIndex(1, PrevBarDelta);
+		        var fv = BuildFeatureVectorForIndex(0, PrevBarDelta);
 		
 		        EnqueueFeatures(fv);
 		
@@ -250,7 +250,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 			        }
 			        double acc = (total > 0) ? (double)correct / total : 0.0;
 			        using (var sw = new StreamWriter(predCsvPath, true, Encoding.UTF8))
-			            sw.WriteLine($"{Times[1][0]:O},{justClosedBarIdx},{lastPredPLong.ToString(System.Globalization.CultureInfo.InvariantCulture)},{predLong},{actualLong},{hit},{acc.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
+			            sw.WriteLine($"{Times[0][0]:O},{justClosedBarIdx},{lastPredPLong.ToString(System.Globalization.CultureInfo.InvariantCulture)},{predLong},{actualLong},{hit},{acc.ToString(System.Globalization.CultureInfo.InvariantCulture)}");
 			    }
 			    catch (Exception ex) { Print($"Pred log write error: {ex.Message}"); }
 			
@@ -352,7 +352,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Simple bar-close label for the just-closed bar:
                 // 1 if Close[1] >= Open[1], else 0 (adjust to your target/definition)
-                double lblLong  = (Close[1] >= Open[1]) ? 1 : 0;
+                double lblLong  = (Close[0] >= Open[0]) ? 1 : 0;
                 double lblShort = 1 - lblLong;
 
                 var row = new List<string>();
